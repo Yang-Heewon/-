@@ -29,17 +29,20 @@ See `third_party/README.md`. Current pins:
 
 ## Byte matching
 
-The runner accounts for:
+The storage estimator accounts for:
 
 - packed K and V payload;
 - quantization scales and zero-points;
 - sparse token indices;
 - mRoPE temporal/height/width position metadata.
 
+These values are estimates until M6 writes and measures a real serialized artifact.
+
 The Phase 1 protocol uses four primary target ratios relative to full visual-KV
 serialized bytes: **20%, 40%, 60%, and 80% keep**. FULL is the uncompressed
 100% reference. SPARSE/QUANT/TRANSFORMED/HYBRID must fit the same target bytes
-at each operating point.
+at each operating point. If 20% is lossless, only the small diagnostic subset adds
+5% and 10%; the main grid remains unchanged.
 
 The current runner has not implemented that grid yet. Its target is the native
 serialized size of all visual KV values under 4-bit KIVI-style quantization
@@ -91,5 +94,8 @@ physical runtime is an A100+ confirmation item.
 - Equal token retention is not an equal storage comparison; use serialized bytes.
 - Fake quantization is a quality baseline, not a speed/memory measurement.
 - The S1 selector is a Qwen2.5-VL adaptation, not an unmodified upstream SnapKV runtime.
+  Because it uses the future question, label it as a read-time comparator unless a
+  separate write-time construction is implemented. It is not persistent-storage
+  compression when full KV must be retained until the question arrives.
 - Merge-on-evict currently uses pre-RoPE visual keys in the adapter; label it as an adaptation.
 - A single smoke record confirms execution only and is not a research result.

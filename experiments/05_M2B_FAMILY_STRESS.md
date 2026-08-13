@@ -30,8 +30,9 @@ M2-A와 M4 뒤에 실행한다. 먼저 실제 sparse 실패와 정보 유형을 
 FULL = 100%
 ```
 
-각 B에서 bit 수, sparse token 수, metadata를 포함해 target bytes 이하가 되는 최대 구성을
-planner가 계산한다. all-token 4-bit의 자연 비율은 grid와 별도의 calibration point다.
+각 B에서 payload bit 수, sparse token 수, group metadata를 포함해 target bytes 이하가 되는
+구성을 planner가 계산한다. exact target을 채우지 못하면 `budget_utilization`과 slack을 기록한다.
+all-token 4-bit의 자연 비율은 grid와 별도의 calibration point다.
 
 ## 4. 전체 평가와 physical 측정 분리
 
@@ -45,7 +46,7 @@ fake quant가 좋은 task score를 냈다고 GPU memory가 줄었다고 주장�
 | 결정 ID | 결정 | 판단 기준 |
 |---|---|---|
 | M2B-01 | family별 published baseline | 각 mechanism을 대표하고 라이선스·revision 고정 |
-| M2B-02 | bit 후보와 group size | 각 B를 실제로 맞출 수 있는 조합 |
+| M2B-02 | payload bit·group size·planner | target 이하에서 품질을 최대화하는 규칙 |
 | G03 | 본평가 표본 수 | M2-A/M4 현상 범위와 계산량 |
 | 분석 선택 | 핵심 task/budget | 결과 전에는 전체 grid, 헤드라인은 사전 기준으로 선택 |
 
@@ -62,6 +63,15 @@ python -m vlm_diagnosis.exps.m2_family_baselines \
 현재 runner는 all-token 4-bit가 차지하는 약 28% bytes를 기준으로 1개 질문의 teacher-forced
 logp를 측정한다. 20/40/60/80 grid와 task metric이 없으므로 smoke다.
 
+어휘를 다음처럼 분리한다.
+
+- `payload_bits`: quantized K/V 자체의 2/4/8-bit precision
+- `budget_anchor_bits`: 현재 smoke가 target bytes를 만드는 2/4-bit 값
+- `hybrid_payload_bits`: sparse subset에 적용할 bit 값
+
+현재 smoke CLI는 `budget_anchor_bits` 역할의 `--reference-bits`에 2/4만 허용하고 8-bit는 hybrid에
+허용한다. 이 제한을 QUANT family 전체의 8-bit 미지원으로 해석하지 않는다.
+
 ## 7. 목표 runner
 
 ```bash
@@ -74,6 +84,7 @@ python -m vlm_diagnosis.exps.m2b_family_stress \
 
 - arbitrary target ratio byte planner
 - B별 feasible bit/token 조합 기록
+- target bytes, actual bytes, utilization, slack 기록
 - task metric generation
 - family×task×budget interaction report
 

@@ -3,6 +3,7 @@ from pathlib import Path
 
 from vlm_diagnosis.scripts.validate_experiment_configs import (
     EXPECTED_BUDGETS,
+    VALID_RUN_KINDS,
     validate_config,
 )
 
@@ -26,6 +27,25 @@ class ExperimentConfigTest(unittest.TestCase):
             with (CONFIGS / name).open(encoding="utf-8") as handle:
                 config = yaml.safe_load(handle)
             self.assertEqual(config["budgets_keep"], EXPECTED_BUDGETS)
+
+    def test_all_configs_have_seed_and_matching_output_class(self):
+        import yaml
+
+        for path in sorted(CONFIGS.glob("m*.yaml")):
+            with path.open(encoding="utf-8") as handle:
+                config = yaml.safe_load(handle)
+            self.assertIsInstance(config["seed"], int)
+            self.assertIn(config["run_kind"], VALID_RUN_KINDS)
+            self.assertTrue(
+                config["output"].startswith(f"results/{config['run_kind']}/"),
+                path,
+            )
+
+    def test_missing_planned_resources_are_reported_as_unresolved(self):
+        errors, unresolved = validate_config(CONFIGS / "m1.yaml")
+        self.assertEqual(errors, [])
+        self.assertTrue(any(item.startswith("resource:data.manifest=") for item in unresolved))
+        self.assertTrue(any(item.startswith("resource:runner=") for item in unresolved))
 
 
 if __name__ == "__main__":

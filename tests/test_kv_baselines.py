@@ -4,6 +4,7 @@ import torch
 
 from vlm_diagnosis.core.kv_baselines import (
     KVShape,
+    VisualKVTransform,
     dense_storage,
     fake_quantize_keys,
     fake_quantize_values,
@@ -49,6 +50,15 @@ class KVBaselineTest(unittest.TestCase):
         mk, mv = merge_evicted_into_kept(self.keys, self.values, keep)
         self.assertTrue(torch.equal(mk, self.keys))
         self.assertTrue(torch.equal(mv, self.values))
+
+    def test_transform_canonicalizes_unsorted_keep_indices(self):
+        transform = VisualKVTransform(
+            object(),
+            visual_positions=range(9),
+            keep_indices=[8, 0, 3, 3],
+            merge=True,
+        )
+        self.assertEqual(transform.keep_indices.tolist(), [0, 3, 8])
 
     def test_storage_accounting_and_byte_matching(self):
         shape = KVShape(layers=4, batch=1, kv_heads=2, tokens=128, head_dim=16)

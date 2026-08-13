@@ -1,17 +1,27 @@
+schema_version: "1.1"
 stage: M3
 status: PARTIAL
 run_kind: discovery
+runner: vlm_diagnosis.exps.m3_transfer
+seed: 42
 model:
   id: Qwen/Qwen2.5-VL-7B-Instruct
   revision: TBD
+  processor_revision: TBD
+  processor_mode: TBD
   dtype: float16
   device: cuda:0
 data:
   manifest: experiments/manifests/m3_pairs.jsonl
+  pairs_per_type_per_image: null
 pair_types: [T0, T1, T2, T3, T4]
+t5_resolution: TBD_G10
 budgets_keep: [0.2, 0.4, 0.6, 0.8]
 subsets: [source_answer_aware, target_answer_aware, published_write_time, random]
 evaluate_on: [q_w, q_r]
 source_self_fidelity_threshold: null
-required_decisions: [G06, M3-01, M3-02, M3-03]
+conditional_signal_diagnostics:
+  trigger: target_probe_succeeds_and_real_selector_fails
+  modules: [D2_signal_confound, D3_signal_alignment]
+required_decisions: [G06, G09, G10, M3-01, M3-02, M3-03]
 output: results/discovery/m3_cross_eval.jsonl

@@ -1,27 +1,48 @@
+schema_version: "1.1"
 stage: M2A
 status: PARTIAL
 run_kind: discovery
+runner: vlm_diagnosis.exps.m2a_fixed_budget
+diagnostic_runner: vlm_diagnosis.exps.m2a_answer_probe
+seed: 42
 model:
   id: Qwen/Qwen2.5-VL-7B-Instruct
   revision: TBD
+  processor_revision: TBD
+  processor_mode: TBD
   dtype: float16
   device: cuda:0
 data:
   full_manifest: experiments/manifests/m2a_full.jsonl
   diagnostic_manifest: experiments/manifests/m2a_diagnostic.jsonl
+  diagnostic_images_per_task_min: null
+  diagnostic_images_per_task_max: null
+  proposed_diagnostic_range: [5, 10]
 budgets_keep: [0.2, 0.4, 0.6, 0.8]
+extreme_budget_rule:
+  trigger: no_task_loss_at_0.2
+  diagnostic_only_budgets: [0.05, 0.1]
+  unmeasured_bstar_label: "<0.2 (left-censored)"
 reference: FULL_KV
 full_split_baselines:
-  - random
-  - spatial_uniform
-  - TBD_PUBLISHED_SOTA
+  write_time_query_agnostic:
+    - random
+    - spatial_uniform
+    - TBD_PUBLISHED_WRITE_TIME
+  read_time_query_aware:
+    - S1
+    - TBD_PUBLISHED_READ_TIME
 diagnostic_only:
   - target_answer_aware
-  - target_query_aware
+  - target_query_aware_probe
 search:
   primary: leave_group_out
   grouping: spatial_2x2
-  audit: [backward_elimination, pair_removal]
+  audit: [backward_elimination, pair_removal, random_search, beam_search]
+  random_beam_max_images_per_task: 5
   max_forward_per_sample_budget: null
-required_decisions: [G03, G06, M2A-01, M2A-02, M2A-04, M2A-05]
+controls:
+  text_only: TBD_CONDITIONAL_G07
+  loyalty: normalized_output_agreement
+required_decisions: [G01, G03, G06, G07, M2A-01, M2A-02, M2A-04, M2A-05, M2A-06]
 output: results/discovery/m2a_fixed_budget.jsonl

@@ -1,9 +1,14 @@
+schema_version: "1.1"
 stage: M1
 status: PLANNED
 run_kind: discovery
+runner: vlm_diagnosis.exps.m1_storage_reuse
+seed: 42
 model:
   id: Qwen/Qwen2.5-VL-7B-Instruct
   revision: TBD
+  processor_revision: TBD
+  processor_mode: TBD
   dtype: float16
   device: cuda:0
 data:
@@ -20,9 +25,14 @@ payloads:
   - IMAGE+K_v
   - K_p+K_v+K_w
 position:
-  offsets: [0, 128, 512, 2048]
-blocks: [1, 2, 4]
+  offsets: null
+  proposed_offsets: [0, 128, 512, 2048]
+block_modes: [single, independent_2, independent_4, joint_2, joint_4]
+interference_modes: [relevant_only]
 prefix_boundary: TBD
 write_read_order: TBD
+gates:
+  m1a_role: serialization_load_injection_gate
+  context_binding_interpretation_starts_at: M1-B
 required_decisions: [G02, G06, M1-01, M1-02, M1-03, M1-04]
 output: results/discovery/m1_storage_reuse.jsonl

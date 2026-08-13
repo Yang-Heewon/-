@@ -93,8 +93,24 @@ BLOCK_MODES = (
     "independent_4",
     "joint_2",
     "joint_4",
+)
+
+INTERFERENCE_MODES = (
+    "relevant_only",
     "relevant_plus_irrelevant",
 )
+
+PAYLOAD_LABELS = {
+    "NO_MEM": (),
+    "IMAGE": ("I",),
+    "IMAGE_REENCODE": ("I",),
+    "T_visual": ("T_o", "T_d", "T_u"),
+    "T_episode": ("T_q", "T_a", "T_out", "T_traj"),
+    # The exact canonical prefix boundary is fixed by M1. FULL_KV means the
+    # stored prefix+visual block plus position metadata, never question KV.
+    "FULL_KV": ("K_p", "K_v", "Z"),
+    "STORED_FULL": ("K_p", "K_v", "Z"),
+}
 
 CORE_PAYLOADS = (
     (),
@@ -153,6 +169,33 @@ def _ordered_payload(payload: Iterable[str]) -> tuple[str, ...]:
     return tuple(atom for atom in PAYLOAD_ATOMS if atom in payload_set)
 
 
+def payload_atoms_for_label(label: str) -> tuple[str, ...]:
+    """Translate config labels such as ``IMAGE+T_visual`` to registry atoms."""
+    if label in PAYLOAD_LABELS:
+        return _ordered_payload(PAYLOAD_LABELS[label])
+    atoms: list[str] = []
+    for part in label.split("+"):
+        if part in PAYLOAD_LABELS:
+            atoms.extend(PAYLOAD_LABELS[part])
+        elif part in PAYLOAD_ATOMS:
+            atoms.append(part)
+        else:
+            raise ValueError(f"unknown payload label: {part!r} in {label!r}")
+    return _ordered_payload(atoms)
+
+
+def position_mode(*, write_offset: int, read_offset: int, context_changed: bool) -> str:
+    """Map numeric config offsets and context change to the registry vocabulary."""
+    shifted = write_offset != read_offset
+    if shifted and context_changed:
+        return "context_and_offset_change"
+    if shifted:
+        return "offset_shift"
+    if context_changed:
+        return "same_offset_context_change"
+    return "same_sequence_same_offset"
+
+
 @dataclass(frozen=True)
 class MemoryCondition:
     payload: tuple[str, ...]
@@ -160,13 +203,14 @@ class MemoryCondition:
     read_mode: str
     position: str
     blocks: str
+    interference: str = "relevant_only"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "payload", _ordered_payload(self.payload))
 
     @property
     def diagnostic_only(self) -> bool:
-        return self.build_mode == "BR_ANSWER_PROBE"
+        return self.build_mode in {"BR_QUERY", "BR_ANSWER_PROBE"}
 
     @property
     def answer_carryover(self) -> bool:
@@ -178,6 +222,7 @@ class MemoryCondition:
         return (
             f"store[{payload}]__build[{self.build_mode}]__read[{self.read_mode}]"
             f"__position[{self.position}]__blocks[{self.blocks}]"
+            f"__interference[{self.interference}]"
         )
 
     def validation_errors(self) -> list[str]:
@@ -190,7 +235,7 @@ class MemoryCondition:
         reads_text = "text" in requirements
         injects_kv = "kv" in requirements
         moved = self.position in {"offset_shift", "context_and_offset_change"}
-        multiple_blocks = self.blocks != "single"
+        multiple_blocks = self.blocks != "single" or self.interference == "relevant_plus_irrelevant"
 
         errors: list[str] = []
         if self.build_mode not in BUILD_MODES:
@@ -201,6 +246,8 @@ class MemoryCondition:
             errors.append("unknown position mode")
         if self.blocks not in BLOCK_MODES:
             errors.append("unknown block mode")
+        if self.interference not in INTERFERENCE_MODES:
+            errors.append("unknown interference mode")
         if not p and self.read_mode != "R_NONE":
             errors.append("empty payload cannot be read")
         if p and self.read_mode == "R_NONE":
@@ -222,9 +269,11 @@ class MemoryCondition:
         if injects_kv and (moved or multiple_blocks) and "Z" not in p:
             errors.append("moved/composed KV requires Z metadata")
         if self.read_mode == "R_NONE" and (
-            self.position != "same_sequence_same_offset" or self.blocks != "single"
+            self.position != "same_sequence_same_offset"
+            or self.blocks != "single"
+            or self.interference != "relevant_only"
         ):
-            errors.append("no-memory control has no position/block manipulation")
+            errors.append("no-memory control has no position/block/interference manipulation")
         if self.read_mode == "R_NONE" and self.build_mode != "B0_GENERIC":
             errors.append("no-memory control uses only the generic build label")
         if not injects_kv and self.position == "offset_shift":
@@ -268,18 +317,20 @@ def generate_conditions(
         raise ValueError("scope must be 'core' or 'full'")
 
     seen: set[str] = set()
-    for payload, build, read, position, blocks in itertools.product(
-        payloads, BUILD_MODES, READ_MODES, POSITIONS, BLOCK_MODES
+    for payload, build, read, position, blocks, interference in itertools.product(
+        payloads, BUILD_MODES, READ_MODES, POSITIONS, BLOCK_MODES, INTERFERENCE_MODES
     ):
         # Z is required metadata, not a standalone representation. Add it to
         # executable moved/composed KV conditions instead of duplicating every
         # canonical payload in CORE_PAYLOADS.
         p = set(payload)
         if scope == "core" and ("kv" in READ_REQUIREMENTS[read]) and (
-            position in {"offset_shift", "context_and_offset_change"} or blocks != "single"
+            position in {"offset_shift", "context_and_offset_change"}
+            or blocks != "single"
+            or interference == "relevant_plus_irrelevant"
         ):
             p.add("Z")
-        condition = MemoryCondition(tuple(p), build, read, position, blocks)
+        condition = MemoryCondition(tuple(p), build, read, position, blocks, interference)
         if condition.condition_id in seen:
             continue
         seen.add(condition.condition_id)

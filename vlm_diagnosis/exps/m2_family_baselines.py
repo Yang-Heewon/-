@@ -27,6 +27,7 @@ import json
 import math
 import os
 import time
+import zlib
 
 import torch
 from PIL import Image
@@ -53,7 +54,7 @@ from vlm_diagnosis.core.spans import token_spans
 
 ROOT = os.path.join(os.path.dirname(__file__), "..", "..")
 META = os.path.join(ROOT, "data", "d4_mini", "meta.jsonl")
-DEFAULT_OUTPUT = os.path.join(ROOT, "results", "m2_family_baselines.jsonl")
+DEFAULT_OUTPUT = os.path.join(ROOT, "results", "smoke", "m2_family_baselines.jsonl")
 MAX_PIXELS = 1280 * 28 * 28
 
 
@@ -68,7 +69,7 @@ def _mask_for_keep(base_mask, visual_positions, keep_ordinals, row_start):
 
 
 @torch.no_grad()
-def evaluate_one(model, processor, image, question, answer, device, reference_bits, hybrid_bits):
+def evaluate_one(model, processor, image, question, answer, device, reference_bits, hybrid_bits, seed):
     ins = S.vlm_inputs(processor, image, question, device)
     answer_ids = processor.tokenizer(answer, add_special_tokens=False, return_tensors="pt").input_ids.to(device)
     full_ids = torch.cat([ins["input_ids"], answer_ids], dim=1)
@@ -89,7 +90,7 @@ def evaluate_one(model, processor, image, question, answer, device, reference_bi
     # S1 is a VLM adaptation of a query-attention/SnapKV-style selector.  S0 is
     # included so a sophisticated selector is never compared only to itself.
     s1 = S.score_s1(model, processor, image, question, device)
-    s0 = S.score_s0(n_visual, seed=0)
+    s0 = S.score_s0(n_visual, seed=seed)
     sparse_s1 = sorted(S.topk_keep(s1, sparse_keep_n / n_visual))
     sparse_s0 = sorted(S.topk_keep(s0, sparse_keep_n / n_visual))
     hybrid_s1 = sorted(S.topk_keep(s1, hybrid_keep_n / n_visual))
@@ -162,6 +163,7 @@ def evaluate_one(model, processor, image, question, answer, device, reference_bi
         "hybrid_keep": hybrid_keep_n,
         "reference_bits": reference_bits,
         "hybrid_bits": hybrid_bits,
+        "sample_seed": seed,
         "metric_scope": "teacher_forced_quality_simulation_not_physical_cache",
         "results": results,
     }
@@ -184,6 +186,9 @@ def run(args):
             started = time.time()
             image = Image.open(doc["image"]).convert("RGB")
             question = doc["questions"][0]
+            sample_seed = zlib.crc32(
+                f"{args.seed}:M2B:{doc['docId']}:{question['qid']}".encode()
+            ) & 0x7FFFFFFF
             record = evaluate_one(
                 model,
                 processor,
@@ -193,6 +198,7 @@ def run(args):
                 args.device,
                 args.reference_bits,
                 args.hybrid_bits,
+                sample_seed,
             )
             record.update(
                 {
@@ -200,6 +206,10 @@ def run(args):
                     "qid": question["qid"],
                     "question": question["q"],
                     "answer": question["answers"][0],
+                    "schema_version": "legacy-m2-family-smoke-v1",
+                    "stage": "M2B",
+                    "run_kind": "smoke",
+                    "base_seed": args.seed,
                 }
             )
             output.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -219,4 +229,5 @@ if __name__ == "__main__":
     parser.add_argument("--limit", type=int, default=1)
     parser.add_argument("--reference-bits", type=int, default=4)
     parser.add_argument("--hybrid-bits", type=int, default=8)
+    parser.add_argument("--seed", type=int, default=42)
     run(parser.parse_args())

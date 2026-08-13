@@ -32,17 +32,21 @@
 - 10스텝 trajectory 전체를 저장해도 **약 1.5–3.7 GB**에 불과합니다.
 - 따라서 **"KV 메모리가 폭발한다"는 동기는 단일 세션에서는 성립하지 않습니다.**
   정직한 비용 논거는 **prefill FLOPs / TTFT(첫 토큰까지의 시간) / 배치 동시성**입니다.
-  (장기 기억 프레임에서는 저장 용량 논거가 되살아남 — [01번 노트](01-연구목표-KV압축.md) 참조)
+  (장기 기억 프레임에서는 저장 용량 논거가 되살아남 —
+  [과거 연구목표 노트](../archive/notes-ko/01-연구목표-KV압축.md) 참조)
 
-### 5. fp16 NaN 함정 (2026-08-13 실측) — layer 27 fp32 패치 필수
+### 5. fp16 NaN 함정 (2026-08-13 실측) — 현재 M0 blocker
 
 - Qwen2.5-VL-7B를 fp16으로 돌리면 **logits가 NaN**이 됩니다 (증상: greedy 생성이
   `'!47!!'` 같은 깨진 출력).
 - 원인: ViT도 잔차 스트림도 정상(absmax ~6.7k)인데, **LLM 마지막 층(27) 내부 연산**이
   fp16 범위를 초과.
-- 해결: 해당 층만 fp32로 실행 (추가 ~1GB). `vlm_diagnosis/core/loader.py`의
-  `fp32_layers="auto"`에 구현됨. 다른 입력 분포에서 다른 층이 터질 수 있으므로
-  `assert_finite_logits` 가드를 모든 실험에 넣을 것.
+- 1차 완화: 해당 층만 fp32로 실행 (추가 ~1GB). `vlm_diagnosis/core/loader.py`의
+  `fp32_layers="auto"`에 구현됨.
+- 후속 실측: 이 패치 이후에도 legacy D4의 S0 4D-mask 경로에서 NaN이 재현됐다. 따라서 layer 27
+  하나가 전체 원인이라고 확정하지 않는다.
+- 다음 조치: full 2D/full 4D/failing mask를 같은 position path로 맞춘 뒤 mask 행, Q/K/V,
+  attention probability, hidden state를 layer별로 추적한다. 원인 확인 전 본실험 금지.
 
 ## 모델 관련 메모
 
@@ -52,5 +56,6 @@
 
 ## 관련 문서
 
-- [01-연구목표-KV압축.md](01-연구목표-KV압축.md)
-- [03-선행연구-현황.md](03-선행연구-현황.md)
+- [현재 PLAN](../PLAN.md)
+- [과거 연구목표 노트](../archive/notes-ko/01-연구목표-KV압축.md)
+- [과거 선행연구 요약](../archive/notes-ko/03-선행연구-현황.md)

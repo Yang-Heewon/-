@@ -323,7 +323,13 @@ class VisualKVTransform(AbstractContextManager):
     ):
         self.model = model
         self.visual_positions = torch.as_tensor(list(visual_positions), dtype=torch.long)
-        self.keep_indices = None if keep_indices is None else torch.as_tensor(list(keep_indices), dtype=torch.long)
+        self.keep_indices = None
+        if keep_indices is not None:
+            # merge_evicted_into_kept returns values in sorted keep-index order.
+            # Canonicalize here too so the hook writes those values back to the
+            # corresponding sorted visual positions for every caller.
+            raw_keep = torch.as_tensor(list(keep_indices), dtype=torch.long)
+            self.keep_indices = torch.unique(raw_keep.flatten(), sorted=True)
         self.nbits = nbits
         self.key_group_size = key_group_size
         self.value_group_size = value_group_size

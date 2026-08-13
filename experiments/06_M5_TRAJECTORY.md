@@ -32,13 +32,17 @@ pre-RoPE cosine 유사도는 관찰값이다. 제거 가능성은 실제 제거 
 3. GUIOdyssey
 4. OSWorld/OSWorld-Verified — 최종 확인, 비용이 큼
 
+AndroidControl과 GUIOdyssey는 현재 공식 공개 경로가 있지만, 과거 로컬 점검에서는 접근 불가로
+기록됐다. 순위만으로 선택하지 않고 다운로드, 라이선스, screenshot/action schema, parser,
+evaluation 재현을 먼저 smoke한다.
+
 ## 4. 사용자가 수정·결정할 부분
 
 | 결정 ID | 결정 | 판단 기준 |
 |---|---|---|
 | M5-01 | 첫 trajectory dataset | screenshot/action 접근성·metric·재현성 |
 | M5-02 | 시간 거리와 block 수 | 실제 episode 길이와 V100 memory |
-| payload | T_episode 구성 | q/action/outcome/trajectory 중 저장 범위 |
+| M5-03 | T_episode 구성 | q/action/outcome/trajectory 중 저장 범위 |
 | HERMES | upstream 그대로 vs Qwen adapter 수정 | 비교 공정성과 구현 가능성 |
 
 ## 5. 현재 실행 가능 범위
@@ -57,6 +61,7 @@ python -m vlm_diagnosis.exps.m5_trajectory \
 필요 구현:
 
 - episode/frame loader
+- dataset access/schema smoke report
 - current-vs-stale conflict annotation
 - multi-block position/metadata assembly
 - action/target/episode metric

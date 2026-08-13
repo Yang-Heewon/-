@@ -1,18 +1,33 @@
+schema_version: "1.1"
 stage: M7
 status: PLANNED
 run_kind: confirmation
+runner: vlm_diagnosis.exps.m7_confirmation
+seed: 42
 frozen_hypothesis: TBD
 primary_metric: TBD
 effect_direction: TBD
 minimum_effect: null
+model_independence_target: TBD_POSITION_OR_FUSION_OR_LLM
 models:
-  - Qwen/Qwen3-VL-8B-Instruct
-  - TBD_GUI_MODEL
-model_revisions: TBD
+  - id: TBD_CONFIRMATION_MODEL_1
+    role: TBD
+    revision: TBD
+  - id: TBD_CONFIRMATION_MODEL_2
+    role: TBD
+    revision: TBD
+candidate_notes:
+  qwen3_vl: qwen_generation_change
+  ui_tars: qwen25_vl_mrope_gui_tuning
+  opencua: qwen25_vl_base_but_1d_rope
+  internvl3: different_visual_integration_but_qwen2_llm
+  llava_onevision: different_visual_integration_but_qwen2_llm
+  strict_non_qwen: TBD
 data:
   manifest: experiments/manifests/m7_confirmation.jsonl
   external_datasets: TBD
+  dataset_revisions: TBD
 exclusion_rules: TBD
 analysis_code_revision: TBD
-required_decisions: [G04, G05, G06, M4-03, M7-01, M7-02]
+required_decisions: [G04, G05, G06, M4-03, M7-01, M7-02, M7-03]
 output: results/confirmation/m7_results.jsonl

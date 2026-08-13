@@ -7,7 +7,7 @@
      - V1: 프롬프트 프리필 후 축출 (질문 토큰은 시각 KV를 이미 봄)
      - V2: 질문 도착 전 축출 (D4 재사용 semantics) ← 이게 폭락해야 PASS
 
-V2가 폭락하지 않으면 마스크가 무시되고 있는 것 → D3/D4 전부 무효 (DIAGNOSIS_DESIGN §3.2).
+V2가 폭락하지 않으면 마스크가 무시되고 있는 것 → M2/M3 전부 무효 (PLAN §2, M0-C/F).
 """
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))

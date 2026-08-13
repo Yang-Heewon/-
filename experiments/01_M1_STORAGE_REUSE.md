@@ -17,8 +17,9 @@
 - `STORED-FULL`: write 시 만든 `K_p+K_v+Z`를 이미지 없이 주입
 - `STORED-FULL FIDELITY`: 위 두 조건의 task/logit 차이
 
-STORED-FULL 실패는 구현 오류로 자동 처리하지 않는다. CACHE-IDENTITY가 통과한 상태라면
-“KV가 write 문맥과 위치에 결박됐다”는 연구 후보가 된다.
+같은 sequence·offset의 M1-A 실패는 먼저 구현 오류나 payload 누락으로 처리한다. CACHE-IDENTITY와
+M1-A가 통과한 뒤 실제 write 문맥을 바꾼 M1-B 또는 offset을 바꾼 M1-C에서 생긴 차이만
+context/position portability 연구 후보가 된다.
 
 ## 3. 저장 payload 원자
 
@@ -52,7 +53,7 @@ STORED-FULL 실패는 구현 오류로 자동 처리하지 않는다. CACHE-IDEN
 
 | 실험 | 고정하는 것 | 바꾸는 것 | 분리되는 원인 |
 |---|---|---|---|
-| M1-A | sequence, offset | IMAGE vs STORED-FULL | full payload fidelity |
+| M1-A | sequence, offset | IMAGE vs STORED-FULL | serialization/load/injection gate |
 | M1-B | offset, payload | write 주변 문맥 | context conditioning |
 | M1-C | payload, 주변 문맥 | offset | mRoPE/position portability |
 | M1-D | 위치 | `K_v` vs `K_p+K_v` | prefix 경계 누락 |
@@ -66,7 +67,7 @@ STORED-FULL 실패는 구현 오류로 자동 처리하지 않는다. CACHE-IDEN
 |---|---|---|
 | M1-01 | `K_p`가 끝나는 정확한 token index | visual-only와 prefix 포함 KV를 구분 |
 | M1-02 | write/read token 순서 | q_w가 K_v에 조건화되는지 결정 |
-| M1-03 | offset sweep | 위치 결박의 범위를 결정 |
+| M1-03 | offset sweep | 제안값을 실제 결정으로 동결해야 함 |
 | M1-04 | 2차 interaction 승격 기준 | 수천 registry 조건의 무분별한 실행 방지 |
 | G02 | T_visual 생성 사양 | TEXT baseline 강도 결정 |
 
@@ -74,8 +75,8 @@ STORED-FULL 실패는 구현 오류로 자동 처리하지 않는다. CACHE-IDEN
 
 ```yaml
 write_semantics: generic image write; q_w/action KV excluded from independent visual memory
-offsets: [0, 128, 512, 2048]
-block_counts: [1, 2, 4]
+proposed_offsets: [0, 128, 512, 2048]
+block_modes: [single, independent_2, independent_4, joint_2, joint_4]
 ```
 
 ## 7. 현재 실행 가능 범위
@@ -110,7 +111,7 @@ python -m vlm_diagnosis.exps.m1_storage_reuse \
 
 | 결과 | 해석 | 다음 단계 |
 |---|---|---|
-| A 실패 | full KV가 이미지 동작을 재현하지 못함 | 누락 prefix/layer 확인, M2 보류 |
+| A 실패 | 저장·복원 경로 gate 실패 | serialization/dtype/prefix/position/injection 확인, 연구 해석 금지 |
 | A 성공, B 실패 | KV가 write 문맥에 조건화 | context portability 문제 후보 |
 | B 성공, C만 악화 | 위치 이식 문제 | RoPE 축 원인 확인 후 M7 후보 |
 | `K_v` 실패, `K_p+K_v` 성공 | 기억 단위가 visual block보다 큼 | 최소 prefix 경계 측정 |

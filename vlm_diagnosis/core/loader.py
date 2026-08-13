@@ -1,9 +1,9 @@
 """모델 로더 — V100 제약: fp16 강제(bf16은 에뮬레이션뿐), FA2 불가 → eager.
 
-fp16 NaN 대응 (2026-08-13 실측): Qwen2.5-VL-7B는 fp16에서 LLM 마지막 층(27) 내부
-연산이 오버플로해 logits가 NaN이 된다 (잔차 스트림 absmax는 ~6.7k로 정상 범위,
-ViT도 정상 — 층 내부 중간값이 문제). 해당 층만 fp32로 실행하면 해결되며 비용은 ~1GB.
-`fp32_layers`로 제어. 새 입력 분포에서 NaN이 재발하면 층을 추가할 것.
+fp16 NaN 1차 대응 (2026-08-13 실측): Qwen2.5-VL-7B의 일부 입력은 LLM 마지막 층(27)을
+fp32로 실행하면 finite가 된다. 그러나 legacy D4의 4D-mask S0 경로에서는 이 패치 뒤에도
+NaN이 재현됐다. 따라서 이 설정은 완전한 해결책이 아니며 M0의 mask/position/layer finite
+진단을 통과하기 전에는 본실험에 사용하지 않는다. 비용은 약 1GB이고 `fp32_layers`로 제어한다.
 """
 import torch
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration

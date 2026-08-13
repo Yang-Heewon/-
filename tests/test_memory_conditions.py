@@ -1,6 +1,11 @@
 import unittest
 
-from vlm_diagnosis.core.memory_conditions import MemoryCondition, generate_conditions
+from vlm_diagnosis.core.memory_conditions import (
+    MemoryCondition,
+    generate_conditions,
+    payload_atoms_for_label,
+    position_mode,
+)
 
 
 class MemoryConditionTest(unittest.TestCase):
@@ -14,6 +19,25 @@ class MemoryConditionTest(unittest.TestCase):
         )
         self.assertTrue(condition.valid)
         self.assertTrue(condition.diagnostic_only)
+
+    def test_read_query_probe_is_diagnostic_only(self):
+        condition = MemoryCondition(
+            payload=("K_v",),
+            build_mode="BR_QUERY",
+            read_mode="R_INJECT_K",
+            position="same_sequence_same_offset",
+            blocks="single",
+        )
+        self.assertTrue(condition.valid)
+        self.assertTrue(condition.diagnostic_only)
+
+    def test_config_label_crosswalk(self):
+        self.assertEqual(payload_atoms_for_label("IMAGE+T_visual"), ("I", "T_o", "T_d", "T_u"))
+        self.assertEqual(payload_atoms_for_label("FULL_KV"), ("K_p", "K_v", "Z"))
+        self.assertEqual(
+            position_mode(write_offset=0, read_offset=128, context_changed=True),
+            "context_and_offset_change",
+        )
 
     def test_episode_answer_is_labeled_as_carryover(self):
         condition = MemoryCondition(
@@ -64,6 +88,18 @@ class MemoryConditionTest(unittest.TestCase):
             read_mode="R_INJECT_K",
             position="offset_shift",
             blocks="single",
+        )
+        self.assertFalse(condition.valid)
+        self.assertIn("moved/composed KV requires Z metadata", condition.validation_errors())
+
+    def test_irrelevant_block_composition_requires_position_metadata(self):
+        condition = MemoryCondition(
+            payload=("K_v",),
+            build_mode="BW_QUERY",
+            read_mode="R_INJECT_K",
+            position="same_sequence_same_offset",
+            blocks="single",
+            interference="relevant_plus_irrelevant",
         )
         self.assertFalse(condition.valid)
         self.assertIn("moved/composed KV requires Z metadata", condition.validation_errors())

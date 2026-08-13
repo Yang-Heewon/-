@@ -1,17 +1,30 @@
+schema_version: "1.1"
 stage: M4
 status: PLANNED
 run_kind: discovery
+runner: vlm_diagnosis.exps.m4_information_types
+seed: 42
 model:
   id: Qwen/Qwen2.5-VL-7B-Instruct
   revision: TBD
+  processor_revision: TBD
+  processor_mode: TBD
   dtype: float16
   device: cuda:0
 data:
   discovery_manifest: experiments/manifests/m4_pctd_discovery.jsonl
   confirmation_manifest: experiments/manifests/m4_pctd_confirmation.jsonl
+sampling:
+  images_per_domain: null
+  proposed_images_per_domain: 50
+  minimum_task_types_per_image: null
+  proposed_minimum_task_types_per_image: 4
 task_types: [OCR, semantic, layout, grounding, icon, count]
 domains: [document, natural_image, mobile_ui, web_desktop_gui]
-conditions: [IMAGE, T_visual, FULL_KV, TBD_M2A_CONDITION]
+conditions:
+  always: [IMAGE, T_visual, FULL_KV, TBD_M2A_CONDITION]
+  conditional:
+    T_episode: only_when_real_episode_exists
 budgets_keep: [0.2, 0.4, 0.6, 0.8]
 required_decisions: [G02, G06, M4-01, M4-02, M4-03]
 output: results/discovery/m4_information_types.jsonl

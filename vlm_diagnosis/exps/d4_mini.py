@@ -20,7 +20,7 @@ from vlm_diagnosis.core import signals as S
 
 ROOT = os.path.join(os.path.dirname(__file__), "..", "..")
 META = os.path.join(ROOT, "data", "d4_mini", "meta.jsonl")
-RESULTS = os.path.join(ROOT, "results", "d4_mini")
+RESULTS = os.path.join(ROOT, "results", "smoke", "legacy", "d4_mini")
 BUDGET = 0.2
 K = 4
 MAX_PIXELS = 1280 * 28 * 28
@@ -41,8 +41,11 @@ def eval_question(model, processor, img, question, answer, device, keep_sets):
     kw = dict(input_ids=full, pixel_values=ins["pixel_values"],
               image_grid_thw=ins["image_grid_thw"], answer_start=P)
 
-    lp_full, _ = answer_logp(model, attention_mask=attn2d, **kw)
     m4 = causal_mask_4d(L, device)
+    # FULL and keep-set conditions must use the identical 4D attention and
+    # explicit mRoPE path. Historical outputs used 2D/no-position FULL and are
+    # archived as invalid because that difference confounded every delta.
+    lp_full, _ = answer_logp(model, attention_mask=m4, position_ids=pos, **kw)
     out = {"full": lp_full}
     vis_list = vis.tolist()
     for name, keep in keep_sets.items():
@@ -56,7 +59,7 @@ def eval_question(model, processor, img, question, answer, device, keep_sets):
     return out, len(vis_list), int(ans_ids.shape[1])
 
 
-def run(shard, nshards, device):
+def run(shard, nshards, device, seed):
     os.makedirs(RESULTS, exist_ok=True)
     model, processor = load_qwen25vl(device=device, max_pixels=MAX_PIXELS)
     docs = [json.loads(l) for l in open(META)][shard::nshards]
@@ -76,7 +79,8 @@ def run(shard, nshards, device):
             n_vis = s3.shape[0]
             ins_probe = S.vlm_inputs(processor, img, "x", device)
             s4 = S.score_s4(processor, img, ins_probe["image_grid_thw"].cpu())
-            s0 = S.score_s0(n_vis, seed=zlib.crc32(str(doc["docId"]).encode()) & 0x7FFFFFFF)
+            sample_seed = zlib.crc32(f"{seed}:{doc['docId']}".encode()) & 0x7FFFFFFF
+            s0 = S.score_s0(n_vis, seed=sample_seed)
             s5 = S.score_s5(model, processor, img, device)
             s1 = [S.score_s1(model, processor, img, q["q"], device) for q in qs]
             for nm, sc in [("S3", s3), ("S4", s4), ("S5", s5)] + [
@@ -94,7 +98,9 @@ def run(shard, nshards, device):
                     model, processor, img, q["q"], q["answers"][0], device, keeps)
                 rows.append({"j": j, "qid": q["qid"], "answer": q["answers"][0],
                              "answer_tokens": alen, "logp": res})
-            f.write(json.dumps({"docId": doc["docId"], "n_vis": n_vis, "K": len(qs),
+            f.write(json.dumps({"schema_version": "legacy-d4-v2", "base_seed": seed,
+                                "sample_seed": sample_seed, "docId": doc["docId"],
+                                "n_vis": n_vis, "K": len(qs),
                                 "rows": rows}, ensure_ascii=False) + "\n")
             f.flush()
             print(f"[shard{shard}] {di+1}/{len(docs)} {doc['docId']} "
@@ -128,7 +134,8 @@ def aggregate():
     dg, of = torch.tensor(diag), torch.tensor(off)
     print(f"\n★ S1 대각(질문 일치)  : {dg.mean():+.3f} (n={len(dg)})")
     print(f"★ S1 비대각(재사용)   : {of.mean():+.3f} (n={len(of)})")
-    print(f"★ 전이 격차 (대각-비대각): {dg.mean()-of.mean():+.3f} ← 이게 G1의 실재 증거")
+    print(f"★ 전이 격차 (대각-비대각): {dg.mean()-of.mean():+.3f}")
+    print("LEGACY DIAGNOSTIC ONLY: task metric·T0–T4·M0 gate 없이 발견으로 해석하지 않음")
 
 
 if __name__ == "__main__":
@@ -136,9 +143,10 @@ if __name__ == "__main__":
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--nshards", type=int, default=1)
     ap.add_argument("--device", default="cuda:0")
+    ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--aggregate", action="store_true")
     a = ap.parse_args()
     if a.aggregate:
         aggregate()
     else:
-        run(a.shard, a.nshards, a.device)
+        run(a.shard, a.nshards, a.device, a.seed)

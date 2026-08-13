@@ -44,6 +44,48 @@ def score_s0(n_vis, seed):
     return torch.rand(n_vis, generator=g)
 
 
+def spatial_uniform_keep(grid_thw, merge_size: int, keep_count: int) -> set[int]:
+    """Deterministic farthest-point coverage on the merged visual-token grid.
+
+    This is a query-agnostic control, not a saliency method.  Coordinates are
+    normalized per temporal/spatial axis so portrait and landscape images get
+    comparable coverage.
+    """
+    if merge_size <= 0:
+        raise ValueError("merge_size must be positive")
+    t, h, w = [int(x) for x in torch.as_tensor(grid_thw)[0]]
+    if h % merge_size or w % merge_size:
+        raise ValueError("grid height/width must be divisible by merge_size")
+    rows, cols = h // merge_size, w // merge_size
+    n_visual = t * rows * cols
+    if not 1 <= keep_count <= n_visual:
+        raise ValueError(f"keep_count must be in [1, {n_visual}], got {keep_count}")
+    if keep_count == n_visual:
+        return set(range(n_visual))
+
+    tt, yy, xx = torch.meshgrid(
+        torch.arange(t, dtype=torch.float32),
+        torch.arange(rows, dtype=torch.float32),
+        torch.arange(cols, dtype=torch.float32),
+        indexing="ij",
+    )
+    coords = torch.stack((tt, yy, xx), dim=-1).reshape(-1, 3)
+    scale = torch.tensor([max(t - 1, 1), max(rows - 1, 1), max(cols - 1, 1)])
+    coords = coords / scale
+    center = torch.tensor([0.5 if t > 1 else 0.0, 0.5, 0.5])
+    first = int(((coords - center) ** 2).sum(dim=-1).argmin())
+    selected = [first]
+    min_distance = ((coords - coords[first]) ** 2).sum(dim=-1)
+    min_distance[first] = -1
+    for _ in range(1, keep_count):
+        next_index = int(min_distance.argmax())
+        selected.append(next_index)
+        distance = ((coords - coords[next_index]) ** 2).sum(dim=-1)
+        min_distance = torch.minimum(min_distance, distance)
+        min_distance[selected] = -1
+    return set(selected)
+
+
 @torch.no_grad()
 def score_s1(model, processor, img, question, device):
     """질문 토큰 행(시각 끝 이후 전부 = 질문+어시스턴트 헤더)의 열 질량."""

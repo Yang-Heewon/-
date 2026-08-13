@@ -23,6 +23,9 @@
 
 임의 K×K 평균만 보고하지 않는다.
 
+현재 보존된 파일에는 과거 T5의 정의가 없다. G10 결정 전에는 임의 T5를 만들지 않으며, 원 정의를
+찾으면 T0–T4 흡수 또는 descope를 기록한다.
+
 ## 3. 집합과 교차평가
 
 고정 budget `B∈{20,40,60,80}%`에서 만든다.
@@ -68,8 +71,9 @@ bash vlm_diagnosis/scripts/launch_d4_mini.sh
 python -m vlm_diagnosis.exps.d4_mini --aggregate
 ```
 
-현재 runner는 20% keep의 K×K teacher-forced logp만 제공한다. source/target probe 교차평가와
-T0–T4 label이 없으므로 transfer 발견으로 해석하지 않는다.
+현재 runner는 20% keep의 K×K teacher-forced logp만 제공한다. 더구나 기존 출력은 FULL과
+keep-set의 mask·position 경로가 달랐고 NaN shard가 있으므로 참고치로도 사용하지 않는다.
+source/target probe 교차평가와 T0–T4 label을 갖춘 새 runner가 필요하다.
 
 ## 6. 목표 runner
 
@@ -89,6 +93,11 @@ python -m vlm_diagnosis.exps.m3_transfer \
 | S_w는 교차성공, F_w만 실패 | estimator 문제 |
 | T0/T1/T2 성공, T3만 실패 | wording보다 evidence 이동이 핵심 |
 | set overlap 낮지만 양쪽 성공 | 대체 가능한 근거; Jaccard만으로 실패 판단 금지 |
+
+`S_r`은 성공하지만 실제 selector만 실패한 경우에만 G09의 조건부 진단을 연다.
+
+- D2-style: length/sink/position/token-count 통제 후 signal 재측정
+- D3-style: 실제 selector signal과 answer-aware importance의 정렬 측정
 
 ## 8. 출력과 완료 조건
 

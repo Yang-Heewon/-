@@ -1,0 +1,17 @@
+The image processor of type `Qwen2VLImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`. Note that this behavior will be extended to all models in a future release.
+Loading checkpoint shards:   0%|          | 0/5 [00:00<?, ?it/s]Loading checkpoint shards:  20%|██        | 1/5 [00:00<00:02,  1.76it/s]Loading checkpoint shards:  40%|████      | 2/5 [00:01<00:01,  1.92it/s]Loading checkpoint shards:  60%|██████    | 3/5 [00:01<00:01,  1.97it/s]Loading checkpoint shards:  80%|████████  | 4/5 [00:02<00:00,  2.00it/s]Loading checkpoint shards: 100%|██████████| 5/5 [00:02<00:00,  2.73it/s]Loading checkpoint shards: 100%|██████████| 5/5 [00:02<00:00,  2.31it/s]
+The following generation flags are not valid and may be ignored: ['temperature']. Set `TRANSFORMERS_VERBOSITY=info` for more details.
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/root/research/heewon/VLM/vlm_diagnosis/exps/d4_mini.py", line 144, in <module>
+    run(a.shard, a.nshards, a.device)
+  File "/root/research/heewon/VLM/vlm_diagnosis/exps/d4_mini.py", line 93, in run
+    res, nv, alen = eval_question(
+                    ^^^^^^^^^^^^^^
+  File "/root/anaconda3/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/root/research/heewon/VLM/vlm_diagnosis/exps/d4_mini.py", line 54, in eval_question
+    raise RuntimeError(f"NaN logp: {name} — fp32_layers 확장 필요")
+RuntimeError: NaN logp: S0 — fp32_layers 확장 필요

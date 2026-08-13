@@ -1,9 +1,15 @@
+schema_version: "1.1"
 stage: M2B
 status: PARTIAL
 run_kind: discovery
+runner: vlm_diagnosis.exps.m2b_family_stress
+smoke_runner: vlm_diagnosis.exps.m2_family_baselines
+seed: 42
 model:
   id: Qwen/Qwen2.5-VL-7B-Instruct
   revision: TBD
+  processor_revision: TBD
+  processor_mode: TBD
   dtype: float16
   device: cuda:0
 data:
@@ -11,11 +17,19 @@ data:
 budgets_keep: [0.2, 0.4, 0.6, 0.8]
 families:
   FULL: [fp16_visual_kv]
-  SPARSE: [random, S1, TBD_PUBLISHED]
+  SPARSE: [random, S1_read_time, TBD_PUBLISHED_WRITE_TIME]
   QUANT: [kivi_style]
   TRANSFORMED: [merge_on_evict]
-  HYBRID: [S1_plus_quant]
-quant_bits_candidates: [2, 4, 8]
+  HYBRID: [sparse_plus_quant]
+quantization:
+  payload_bits_candidates: [2, 4, 8]
+  group_sizes: TBD
+  smoke_budget_anchor_bits_allowed: [2, 4]
+  smoke_hybrid_payload_bits_allowed: [4, 8]
+planner:
+  constraint: actual_bytes_lte_target_bytes
+  objective: TBD_QUALITY_OBJECTIVE
+  report: [target_bytes, actual_bytes, budget_utilization, budget_slack]
 byte_overheads: [sparse_index, position_metadata, scale, zero_point]
 required_decisions: [G03, G06, M2B-01, M2B-02]
 output: results/discovery/m2b_family_stress.jsonl

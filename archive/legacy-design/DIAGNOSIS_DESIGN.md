@@ -1,4 +1,7 @@
-# DIAGNOSIS_DESIGN.md — 문제의식 확립을 위한 진단 실험 재설계 (v2)
+# DIAGNOSIS_DESIGN.md — 문제의식 확립을 위한 진단 실험 재설계 (v2, ARCHIVED)
+
+> 역사적 설계 문서다. 현재 실행 순서·metric·gate와 충돌하면 `/PLAN.md`와 `/experiments/`가
+> 우선한다. D2/D3는 현재 selector failure 뒤 조건부 진단으로만 유지된다.
 
 > v1(`EXPERIMENTS.md`)에 대한 비판적 분석 + 실행 가능한 대체 설계.
 > **핵심 진단: v1은 "통계"를 재고 "피해"를 재지 않는다.** 리뷰어의 첫 질문인 *"그래서 그게 뭐가 문제인데?"* 에

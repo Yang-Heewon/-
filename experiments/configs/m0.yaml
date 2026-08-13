@@ -1,23 +1,36 @@
+schema_version: "1.1"
 stage: M0
-status: PARTIAL
+status: BLOCKED
 run_kind: smoke
+runner: vlm_diagnosis.exps.m0_measurement
+seed: 42
 model:
   id: Qwen/Qwen2.5-VL-7B-Instruct
   revision: TBD
+  processor_revision: TBD
+  processor_mode: TBD
   dtype: float16
   device: cuda:0
 data:
   manifest: experiments/manifests/m0_sanity.jsonl
+  minimum_samples_per_nontext_task: null
+  proposed_minimum_samples_per_nontext_task: 10
 checks:
   - image_base
-  - mask_2d_vs_4d
-  - full_visual_mask
-  - keep100_vs_no_mask
-  - cache_identity
-  - v1_vs_v2
+  - mask_2d_4d
+  - full_mask
+  - keep100
+  - cache_identity_strict
+  - cache_equivalence_operational
+  - v1_v2
   - finite
 thresholds:
-  cache_identity_max_abs: null
+  strict_cache_max_abs: null
+  strict_logit_max_abs: null
+  operational_logit_max_abs: null
   task_equivalence_percentage_point: null
-required_decisions: [G06, M0-01, M0-02, M0-03]
-output: results/discovery/m0_measurement.jsonl
+nan_diagnosis:
+  status: TBD
+  trace: [mask_rows, qkv_by_layer, attention_prob_by_layer, hidden_state_by_layer]
+required_decisions: [G06, M0-01, M0-02, M0-03, M0-04]
+output: results/smoke/m0_measurement.jsonl

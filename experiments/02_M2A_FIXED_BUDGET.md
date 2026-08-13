@@ -18,7 +18,9 @@
 FULL-KV = 100% reference
 ```
 
-모든 조건은 serialized bytes로 맞춘다. sparse index와 position metadata를 포함한다.
+모든 조건은 serialized bytes로 맞춘다. sparse index와 position metadata를 포함한다. 20%에서
+손실이 없으면 diagnostic subset에만 5%·10%를 추가한다. 추가하지 않은 상태에서 최소 성공 예산을
+보고하면 `B* < 0.2 (left-censored)`로 쓴다.
 
 ## 3. Track 1 — 전체 planned split
 
@@ -27,10 +29,15 @@ FULL-KV = 100% reference
 - `FULL-KV`
 - `random`
 - `spatial-uniform`
-- `published SOTA` — 정확한 목록은 M2A-01에서 결정
+- `published write-time/query-agnostic SOTA` — persistent storage의 주 baseline
+- `S1` 및 published read-time/query-aware comparator — full KV 저장 필요 여부 표시
 
 각 방법이 budget 안의 subset을 선택한 뒤, subset만으로 답을 새로 생성하고 공식 metric을
-측정한다. 결과는 budget–retention curve와 이미지별 `B*`로 보고한다.
+측정한다. 결과는 budget–retention curve와 이미지별 `B*`로 보고한다. read-time 방법은 전체
+split에서 평가할 수 있지만 write-time 저장 압축의 직접 비교로 해석하지 않는다.
+
+“visual KV가 text KV보다 특별히 취약하다”는 주장을 채택하면 같은 모델의 작은 text-only QA
+통제군을 추가한다. 이 결정은 G07에 기록한다.
 
 ## 4. Track 2 — 소규모 원인 진단
 
@@ -70,12 +77,15 @@ search 방식에 따라 `B*` 결론이 바뀌면 `I`다.
 | M2A-02 | diagnostic sample ID | 결과를 보기 전에 task별 5–10장 고정 |
 | M2A-04 | 최대 search 계산량 | GPU 시간과 probe 안정성의 균형 |
 | M2A-05 | grounding selection score | 실제 click success와 정렬되는지 pilot |
+| M2A-06 | 5%·10% 발동 규칙 | 20%에서 손실이 없을 때 diagnostic에만 추가 |
 | G03 | 전체 discovery 표본 수 | pilot variance 기반 |
+| G07 | text-only 통제군 | visual-specific 귀속을 주장할 때 포함 |
 
 ## 7. 현재 실행 가능한 legacy 구성요소
 
-`d4_mini.py`에는 random과 S1 logical mask가 있지만 budget 20% 고정, teacher-forced logp,
-T0–T4 미라벨 상태다. M2-A 본결과로 사용하지 않는다.
+`d4_mini.py`에는 random과 S1 logical mask가 있지만 과거 출력은 FULL과 keep-set의
+attention/position 경로가 달랐고 한 shard에서 NaN이 발생했다. 과거 결과는 참고치로도 사용하지
+않는다. 코드는 legacy 재현·회귀 검사에만 둔다.
 
 ```bash
 python -m vlm_diagnosis.exps.d4_mini --shard 0 --nshards 1 --device cuda:0
@@ -96,10 +106,22 @@ python -m vlm_diagnosis.exps.m2a_answer_probe \
 구현해야 할 것:
 
 - 20/40/60/80 byte planner
+- 조건부 5/10 diagnostic planner와 censored B* 표기
+- spatial-uniform primitive를 full runner에 연결
 - published SOTA adapter
 - 생성 기반 dataset metric
-- answer-aware/query-aware search
+- answer-aware/query-aware search와 random/beam audit
 - budget별 bootstrap와 `B*`
+- normalized loyalty 보조 metric
+
+DocVQA manifest 생성 목표 interface:
+
+```bash
+python -m vlm_diagnosis.scripts.prep_docvqa \
+  --dataset-revision <commit> \
+  --manifest experiments/manifests/m2a_diagnostic.jsonl \
+  --seed 42
+```
 
 ## 9. 판정
 
@@ -110,6 +132,9 @@ python -m vlm_diagnosis.exps.m2a_answer_probe \
 | random/uniform≈SOTA | 복잡한 importance의 추가 가치가 약함 |
 | random≈A_r≈FULL | 시각 KV 중복이 커 selector 연구 동기가 약함 |
 | 80%에서만 보존 | 강한 압축은 어렵고 낮은 제거율에서만 가능 |
+| 20%에서 모두 FULL, 5/10 미실행 | 실패 없음이 아니라 `B*<0.2` censored |
+| text-only 유지, visual만 하락 | visual modality/workload 귀속 강화 |
+| task score 유지, loyalty만 하락 | correctness 유지 속 behavior drift canary |
 
 ## 10. 완료 조건
 
