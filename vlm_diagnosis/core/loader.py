@@ -1,15 +1,36 @@
 """모델 로더 — V100 제약: fp16 강제(bf16은 에뮬레이션뿐), FA2 불가 → eager.
 
-fp16 NaN 1차 대응 (2026-08-13 실측): Qwen2.5-VL-7B의 일부 입력은 LLM 마지막 층(27)을
-fp32로 실행하면 finite가 된다. 그러나 legacy D4의 4D-mask S0 경로에서는 이 패치 뒤에도
-NaN이 재현됐다. 따라서 이 설정은 완전한 해결책이 아니며 M0의 mask/position/layer finite
-진단을 통과하기 전에는 본실험에 사용하지 않는다. 비용은 약 1GB이고 `fp32_layers`로 제어한다.
+fp16 NaN 원인 확정 (2026-08-13, M0-04 진단; results/smoke/nan_diagnosis/):
+HF eager attention은 `matmul(Q, K^T) * scaling` 순서라 스케일 전 QK^T가 fp16 matmul
+출력에서 65504를 넘으면 inf → softmax NaN이 된다. 실측: doc4733 q1의 layer 0에서
+스케일 후 max|logit| 6145 (스케일 전 ≈ 69.5k > 65504), layer 27은 상시 ~10.5k
+(스케일 전 ≈ 118k) — 과거 layer-27 fp32 패치가 우연히 맞았던 이유도 같은 메커니즘.
+
+근본 처방: `(Q*scaling) @ K^T`로 순서를 바꾸는 patch_stable_qk_scale() (수학적 동일,
+스케일 후 최대 ~11k는 fp16 범위 내). 기본 적용된다. `fp32_layers`는 진단·비교용으로
+남겨두며 prescale 패치가 검증된 뒤에는 기본 비활성이다.
 """
 import torch
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+import transformers.models.qwen2_5_vl.modeling_qwen2_5_vl as _qwen_mod
 
-# 모델별 실측 오버플로 층
-DEFAULT_FP32_LAYERS = {"Qwen/Qwen2.5-VL-7B-Instruct": (27,)}
+# 모델별 실측 오버플로 층 — prescale 패치 이전의 1차 완화 기록 (진단 비교용)
+LEGACY_FP32_LAYERS = {"Qwen/Qwen2.5-VL-7B-Instruct": (27,)}
+DEFAULT_FP32_LAYERS = {}
+
+_ORIG_EAGER_ATTENTION = _qwen_mod.eager_attention_forward
+
+
+def _stable_eager_attention(module, query, key, value, attention_mask,
+                            scaling, dropout=0.0, **kwargs):
+    """(Q*scaling)@K^T — matmul 출력의 fp16 overflow(스케일 전 |QK^T|>65504) 차단."""
+    return _ORIG_EAGER_ATTENTION(module, query * scaling, key, value,
+                                 attention_mask, 1.0, dropout, **kwargs)
+
+
+def patch_stable_qk_scale(enable=True):
+    _qwen_mod.eager_attention_forward = (
+        _stable_eager_attention if enable else _ORIG_EAGER_ATTENTION)
 
 
 def _run_layer_in_fp32(layer):
@@ -35,7 +56,9 @@ def _run_layer_in_fp32(layer):
 
 
 def load_qwen25vl(model_id="Qwen/Qwen2.5-VL-7B-Instruct", device="cuda:0",
-                  min_pixels=None, max_pixels=None, fp32_layers="auto"):
+                  min_pixels=None, max_pixels=None, fp32_layers="auto",
+                  stable_qk_scale=True):
+    patch_stable_qk_scale(stable_qk_scale)
     pkw = {}
     if min_pixels is not None:
         pkw["min_pixels"] = min_pixels
