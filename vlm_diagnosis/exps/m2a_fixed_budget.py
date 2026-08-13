@@ -105,6 +105,8 @@ def main():
     ap.add_argument("--manifest", default="experiments/manifests/m2a_diagnostic.jsonl")
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--shard", type=int, default=0)
+    ap.add_argument("--nshards", type=int, default=1)
     ap.add_argument("--budgets", default="0.2,0.4,0.6,0.8")
     ap.add_argument("--eval-questions-per-doc", type=int, default=3)
     ap.add_argument("--max-new-tokens", type=int, default=32)
@@ -114,8 +116,11 @@ def main():
 
     budgets = [float(x) for x in a.budgets.split(",")]
     rows = [json.loads(l) for l in open(os.path.join(ROOT, a.manifest))]
+    rows = rows[a.shard::a.nshards]
     if a.limit:
         rows = rows[:a.limit]
+    if a.nshards > 1:
+        a.out = a.out.replace(".jsonl", f".shard{a.shard}.jsonl")
     model, processor = load_qwen25vl(device=a.device, max_pixels=MAX_PIXELS)
     out_path = os.path.join(ROOT, a.out)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
