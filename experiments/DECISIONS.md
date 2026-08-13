@@ -13,7 +13,7 @@
 | G03 | discovery 표본 수와 ID | TBD | pilot variance 후 manifest 동결 | 본실험 전 |
 | G04 | M7 모델 독립성 기준과 후보 | TBD | position/fusion/LLM 중 주장 대상부터 고정 | M7 freeze 전 |
 | G05 | 실용적 최소 효과 | TBD | task 또는 SLO 의미로 결정 | M7 freeze 전 |
-| G06 | model·processor·dataset revision | TBD | 최초 해당 stage smoke 전에 hash 고정 | 각 단계 전 |
+| G06 | model·processor·dataset revision | DECIDED(discovery): 아래 기록 참조 | 최초 해당 stage smoke 전에 hash 고정 | 각 단계 전 |
 | G07 | text-only modality control | CONDITIONAL | visual-specific 주장일 때 M2-A 소표본 포함 | M2-A 전 |
 | G08 | loyalty 정의 | CONDITIONAL | QA normalized agreement, action target agreement | metric 구현 전 |
 | G09 | D2/D3 신호 진단 | CONDITIONAL | M2-A/M3 selector failure 뒤에만 실행 | M3 판정 후 |
@@ -168,4 +168,24 @@ evidence_available_at_decision:
 changes_previous_decision: yes/no
 impact_on_existing_results:
 source_code_revision:
+```
+
+## 14. 결정 기록 로그
+
+```text
+ID: G06 (discovery scope)
+date: 2026-08-13
+decision:
+  discovery model  = Qwen/Qwen2.5-VL-7B-Instruct @ cc594898137f460bfe9f0759e9844b3ce807cfb5
+  processor        = 동일 repo/revision, fast image processor, min/max_pixels 무변경
+                     (per-stage pixel cap은 각 runner config에서 별도 명시; legacy d4는
+                     max_pixels=1280*28*28을 사용했음 — M2-A runner 설계 시 결정 필요)
+  discovery dataset = lmms-lab/DocVQA @ 539088ef8a8ada01ac8e2e6d4e372586748a265e
+rationale: 로컬 HF cache snapshot을 그대로 고정 — 지금까지의 smoke가 실행된 바로 그 가중치.
+evidence_available_at_decision: ~/.cache/huggingface/hub snapshot 디렉터리 hash.
+changes_previous_decision: no (TBD → 최초 결정)
+impact_on_existing_results: 없음 (기존 결과는 전부 archive/invalid)
+source_code_revision: 14cc6a1 이후 커밋 예정
+비고: confirmation 모델(m7) revision은 G04 결정 후 별도 기록. Qwen3-VL-8B-Instruct도
+로컬 cache에 존재함을 확인 (docs/HARDWARE_CONSTRAINTS.md의 '다운로드 필요' 메모는 stale).
 ```
