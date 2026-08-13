@@ -28,10 +28,13 @@ full_split_baselines:
   write_time_query_agnostic:
     - random
     - spatial_uniform
-    - TBD_PUBLISHED_WRITE_TIME
-  read_time_query_aware:
+    - s5_kvzip_vlm_adaptation
+    - knorm_kvpress_adaptation
+  write_time_source_aware:
+    - h2o_style_past_episode
+  read_time_query_aware_comparators:
     - S1
-    - TBD_PUBLISHED_READ_TIME
+    - GUI_KV_pending_repo_verification
 diagnostic_only:
   - target_answer_aware
   - target_query_aware_probe

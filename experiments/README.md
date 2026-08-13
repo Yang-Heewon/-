@@ -26,7 +26,7 @@
 
 | 순서 | 단계 | 상태 | 문서 | config |
 |---:|---|---|---|---|
-| 0 | M0 측정 계약 | PARTIAL | [00_M0_MEASUREMENT.md](00_M0_MEASUREMENT.md) | [m0.yaml](configs/m0.yaml) |
+| 0 | M0 측정 계약 | COMPLETE | [00_M0_MEASUREMENT.md](00_M0_MEASUREMENT.md) | [m0.yaml](configs/m0.yaml) |
 | 1 | M1 저장·재사용 경계 | PARTIAL | [01_M1_STORAGE_REUSE.md](01_M1_STORAGE_REUSE.md) | [m1.yaml](configs/m1.yaml) |
 | 2 | M2-A 고정 예산 sparse | PARTIAL | [02_M2A_FIXED_BUDGET.md](02_M2A_FIXED_BUDGET.md) | [m2a.yaml](configs/m2a.yaml) |
 | 3 | M3 미래 질문 전이 | PARTIAL | [03_M3_TRANSFER.md](03_M3_TRANSFER.md) | [m3.yaml](configs/m3.yaml) |

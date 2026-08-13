@@ -18,6 +18,33 @@ def exact_match(pred, acceptable):
     return float(any(p == normalize_text(a) for a in acceptable))
 
 
+def _levenshtein(a, b):
+    if len(a) < len(b):
+        a, b = b, a
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def anls(pred, acceptable, tau=0.5):
+    """DocVQA 공식 지표: 정규화 편집거리 유사도(0~1), 유사도<tau면 0점.
+    여러 허용 정답 중 최고값."""
+    p = normalize_text(pred)
+    best = 0.0
+    for g in acceptable:
+        gn = normalize_text(g)
+        if not p and not gn:
+            best = max(best, 1.0)
+            continue
+        d = _levenshtein(p, gn)
+        best = max(best, 1.0 - d / max(len(p), len(gn), 1))
+    return best if best >= tau else 0.0
+
+
 def contains_match(pred, acceptable):
     """정규화 후 gold가 예측 문장 안에 포함되는가 — smoke 전용 관대 지표.
     본실험(M2-A)은 공식 ANLS + 짧은-답 prompt로 대체해야 한다."""

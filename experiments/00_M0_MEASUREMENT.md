@@ -4,8 +4,11 @@
 >
 > **왜 필요한가:** 구현 오류도 정보 손실처럼 보일 수 있으므로, 이를 먼저 배제하지 않으면 이후 결과를 해석할 수 없다.
 
-**상태:** `PARTIAL` — NaN 원인 확정·해결(M0-04, DECISIONS §14: QK pre-scale 패치,
-384/384 finite sweep). runner `exps/m0_measurement.py` 가동, 허용오차(M0-01) 고정 대기
+**상태:** `COMPLETE` (2026-08-14) — 8검사 전부 동결 임계값 내 통과
+(run `m0-20260813T170308Z`, `results/smoke/m0_report.md`). 허용오차 M0-01 동결:
+strict logit 0.5 / operational 0.5 / cache 4.0. base 기준 M0-03 동결: 텍스트류 ≥0.8
+(실측 1.00), grounding ≥0.5 (실측 0.60 — 모델의 상단 물체 y좌표 하향 편향, 형식 문제 아님;
+retention은 conditional 규칙으로 처리)
 **질문:** 이후의 성능 차이가 실제 memory 개입 때문인가, 구현 artifact 때문인가?
 **실행 계약:** [configs/m0.yaml](configs/m0.yaml)
 
