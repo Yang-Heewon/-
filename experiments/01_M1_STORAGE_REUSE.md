@@ -4,7 +4,10 @@
 >
 > **왜 필요한가:** 원본 memory의 저장·재사용부터 실패한다면 이후의 성능 저하를 압축 때문이라고 판단할 수 없다.
 
-**상태:** `PLANNED`  
+**상태:** `PARTIAL` — `exps/m1_storage_reuse.py` 가동 (M1-A gate + K_v-only/ctx-shift/
+naive-offset 프로브). smoke 16질문: NO-MEM 0.00 / IMAGE 0.94 / STORED-FULL 1.00
+(**M1-A gate 통과**) / K_v-only 0.75 / naive offset +2048까지 EM 유지. 아직 없는 것:
+mRoPE 재회전 주입, canonical 10 payload(T_visual 필요), block 합성, divergence tracing.  
 **질문:** 압축하지 않은 상태에서도 memory payload가 어디서 처음 깨지는가?
 **실행 계약:** [configs/m1.yaml](configs/m1.yaml)
 

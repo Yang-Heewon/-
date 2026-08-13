@@ -102,8 +102,8 @@ def gen_grounding(rng, i):
     (cx, cy) = _grid_cells(rng, 1)[0]
     r = 55
     draw_shape(d, "circle", COLORS[color], cx, cy, r)
-    q = (f"Provide the pixel coordinates of the center of the {color} circle "
-         f"in this {SIZE}x{SIZE} image. Answer in the form (x, y).")
+    q = (f"Where is the center of the {color} circle in this {SIZE}x{SIZE} "
+         f"image? Respond with only the coordinates in the form (x, y).")
     bbox = [cx - 2 * r, cy - 2 * r, cx + 2 * r, cy + 2 * r]  # 관대한 히트박스
     return img, q, None, bbox, {"center": [cx, cy], "radius": r, "color": color}
 

@@ -299,7 +299,7 @@ archive/results/       무효화된 legacy 결과와 실패 증거
 |---|---|---|---|
 | P0 | PARTIAL | 루트 Git과 baseline source pin | config/resource validator 강화 |
 | M0 | PARTIAL | NaN 원인 확정·수정(QK pre-scale), m0_measurement runner 8검사, 합성 non-text sanity 40표본 | M0-01 허용오차 고정, 판정 report |
-| M1 | PLANNED | condition registry | cache serialization/resume runner |
+| M1 | PARTIAL | m1_storage_reuse runner (M1-A gate PASS, K_v/offset 프로브) | mRoPE 재회전, canonical 10 payload, block 합성 |
 | M2-A | PARTIAL | random/S1와 spatial-uniform primitive | full runner 연결, task metric, budget grid, probes |
 | M3 | PARTIAL | 무효화된 legacy K×K 코드 | T0–T4 manifest와 교차평가 runner |
 | M4 | PLANNED | 데이터 후보 | PCTD schema·annotation·runner |
