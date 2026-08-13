@@ -138,7 +138,26 @@ parser, evaluation 재현을 확인한다.
 | D3 signal alignment | CONDITIONAL | answer-aware capacity가 있고 실제 selector만 실패할 때 |
 | legacy d4 result | INVALID_ARCHIVED | full/compressed attention·position 경로 confound+NaN |
 
-## 12. 결정 기록 형식
+## 12. 논문 성립 문장 (publication routing — 판정 기준 아님)
+
+이 섹션은 결과가 나왔을 때 어느 논문 템플릿이 채워지고 있는지 즉시 보기 위한 **편집적
+라우팅 기준**이다. E/S/N/I 판정과 G05에는 사용하지 않는다. 기준 미달은 실험 실패가 아니라
+다른 템플릿으로의 재라우팅이다. 분기 판단 시점은 M2-A Track 1·2와 M3 gap 분해 완료 시점.
+규모 감각의 선례: KVzip 재사용 붕괴 35%p, MMMU 인간-모델 격차 32%p, ScreenSpot→Pro 붕괴
+50%p+.
+
+| # | 템플릿 | 먹여 살리는 실험 | 성립 문장 (2026-08-13 동결) |
+|---|---|---|---|
+| P1 | failure 발견 (analysis) | M2-A+M3 | B=20–40%에서 target probe는 IMAGE의 95%를 회복하지만(capacity gap ≤5%p), 실제 write-time selector는 미래 질문에서 **≥15%p** 잃고(end2end gap), 손실의 2/3 이상이 relevance 또는 estimator 한 축에 귀속되며, 2개 모델 계열·2개 데이터셋에서 방향이 재현된다 |
+| P2 | 역방향 (KV memory 반증) | M1-F+M6 | 현실적 workload 전 구간(M6-01 low–high)에서 IMAGE(-DOWNSCALED)가 모든 KV family를 품질·총비용에서 **동시 지배**하고, compressed KV 손익분기 회상 빈도가 이미지당 월 [TBD, M6-01 후 고정] 이상이며, latency 이득도 warm-cache 외 [TBD ms] 미만이다 |
+| P3 | PCTD 벤치마크 (D&B) | M4 | 같은 이미지·같은 예산에서 정보 유형 간 retention 격차가 **≥25–30%p**(예: semantic 95% vs grounding 60%)이고, dataset 평균으로 합치면 ≤5%p로 사라져 기존 벤치마크가 구조적으로 못 보던 것임을 보이며, 2개 모델 계열에서 유형 순위가 보존된다 |
+| P4 | 방법 (Phase 2) | 전체+M3 gap | selector가 M3 estimator gap의 **≥60%를 회수**하여 B=20–40%에서 최강 write-time baseline 대비 **+10%p 이상**(취약 정보 유형에서 +20%p급)이고, M6 비용 표면에서 비지배 영역을 가지며, 2개 모델 계열에서 재현된다 |
+
+라우팅 규칙: P2는 P1/P4와 같은 실험에서 갈라지는 분기다(별도 투자 금지). P1 효과가
+15%p 미만이면 workshop 규모로 강등. P3은 P1/P2 방향이 보인 뒤에만 PCTD annotation을
+커밋한다. P4는 P1의 estimator-gap 귀속이 확정된 경우에만 연다.
+
+## 13. 결정 기록 형식
 
 ```text
 ID:
