@@ -42,9 +42,11 @@ class ExperimentConfigTest(unittest.TestCase):
             )
 
     def test_missing_planned_resources_are_reported_as_unresolved(self):
-        errors, unresolved = validate_config(CONFIGS / "m1.yaml")
+        # m4는 runner(m4_information_types)와 PCTD manifest가 아직 없는 PLANNED 단계다.
+        # 해당 runner가 구현되면 아직 미구현인 다른 단계로 픽스처를 옮긴다.
+        errors, unresolved = validate_config(CONFIGS / "m4.yaml")
         self.assertEqual(errors, [])
-        self.assertTrue(any(item.startswith("resource:data.manifest=") for item in unresolved))
+        self.assertTrue(any(item.startswith("resource:data.") for item in unresolved))
         self.assertTrue(any(item.startswith("resource:runner=") for item in unresolved))
 
 
