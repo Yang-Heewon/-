@@ -45,7 +45,7 @@
 |---|---|---|---|
 | M0-01 | strict·operational 허용오차 | TBD — **실측 완료**, 제안값 m0.yaml `proposed_*` (strict logit worst 0.156→제안 0.5; operational worst 0.188→0.5; prefix KV worst 1.08→4.0) | one-shot vs resume와 chunk/batch perturbation을 분리 |
 | M0-02 | non-text sanity task와 표본 | 합성 세트 v1 생성 (ocr/icon/layout/grounding 각 10) — grounding 질문은 좌표-전용 응답으로 1회 수정 | icon/layout/grounding 각 최소 10개 |
-| M0-03 | IMAGE base 최소 성능 | TBD — 실측: ocr/icon/layout 1.00, grounding은 prompt 수정 재실행 중; 제안 0.8 | 공식 metric으로 task별 결정 |
+| M0-03 | IMAGE base 최소 성능 | TBD — 실측(좌표-전용 prompt): ocr/icon/layout 1.00, grounding 0.60. 제안: 텍스트류 0.8, grounding은 Qwen bbox 관례 반영해 prompt/판정 1회 더 반복 후 결정 | 공식 metric으로 task별 결정 |
 | M0-04 | fp16 NaN 대응 | DECIDED: QK pre-scale 패치 (§14 기록) | mask·position·layer finite를 먼저 localize |
 
 ## 3. M1
