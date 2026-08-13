@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.1",
+  "generated_at_utc": "2026-08-13T14:16:25.495998+00:00",
+  "generator": "vlm_diagnosis.scripts.prep_docvqa",
+  "dataset_id": "lmms-lab/DocVQA",
+  "dataset_revision": "539088ef8a8ada01ac8e2e6d4e372586748a265e",
+  "source_split": "validation",
+  "output_split": "diagnostic",
+  "selection_seed": 42,
+  "scan_rows": 4000,
+  "rows_seen": 4000,
+  "k_min": 4,
+  "eligible_documents": 533,
+  "selected_documents": 32
+}
