@@ -8,8 +8,8 @@
 | ID | 결정할 것 | 상태·현재값 | 권장 시작점 | 결정 시점 |
 |---|---|---|---|---|
 | G00 | source revision 관리 | DECIDED: root Git+baseline submodule pin | config/manifest hash도 결과에 복사 | 2026-08-13 |
-| G01 | published baseline 목록과 압축 시점 | TBD | write-time 1–2개, read-time 1–2개를 분리 | M2-A 구현 전 |
-| G02 | `T_visual` 생성 모델·revision·prompt | TBD | OCR+bbox, dense caption, UI tree를 분리 | M1-F 전 |
+| G01 | published baseline 목록과 압축 시점 | DECIDED: docs/G01-baseline-candidates.md 안 A (§14 기록) | write-time 1–2개, read-time 1–2개를 분리 | M2-A 구현 전 |
+| G02 | `T_visual` 생성 모델·revision·prompt | DECIDED: docs/G02-tvisual-spec.md 채택 — PaddleOCR 주+Tesseract fallback, T_d=Qwen greedy 512tok, T_u=annotation 우선. 세부 prompt 문안·버전 hash는 구현 시 동결해 §14에 추가 | OCR+bbox, dense caption, UI tree를 분리 | M1-F 전 |
 | G03 | discovery 표본 수와 ID | TBD | pilot variance 후 manifest 동결 | 본실험 전 |
 | G04 | M7 모델 독립성 기준과 후보 | TBD | position/fusion/LLM 중 주장 대상부터 고정 | M7 freeze 전 |
 | G05 | 실용적 최소 효과 | TBD | task 또는 SLO 의미로 결정 | M7 freeze 전 |
@@ -43,7 +43,7 @@
 
 | ID | 결정할 것 | 현재값 | 권장 시작점 |
 |---|---|---|---|
-| M0-01 | strict·operational 허용오차 | TBD — **실측 완료**, 제안값 m0.yaml `proposed_*` (strict logit worst 0.156→제안 0.5; operational worst 0.188→0.5; prefix KV worst 1.08→4.0) | one-shot vs resume와 chunk/batch perturbation을 분리 |
+| M0-01 | strict·operational 허용오차 | DECIDED: strict logit 0.5 / operational logit 0.5 / prefix cache 4.0 / task 동등성 2.5%p — 실측 worst(0.156/0.188/1.08)의 ~3배 여유, m0.yaml 정식 필드 반영 | one-shot vs resume와 chunk/batch perturbation을 분리 |
 | M0-02 | non-text sanity task와 표본 | 합성 세트 v1 생성 (ocr/icon/layout/grounding 각 10) — grounding 질문은 좌표-전용 응답으로 1회 수정 | icon/layout/grounding 각 최소 10개 |
 | M0-03 | IMAGE base 최소 성능 | TBD — 실측(좌표-전용 prompt): ocr/icon/layout 1.00, grounding 0.60. 제안: 텍스트류 0.8, grounding은 Qwen bbox 관례 반영해 prompt/판정 1회 더 반복 후 결정 | 공식 metric으로 task별 결정 |
 | M0-04 | fp16 NaN 대응 | DECIDED: QK pre-scale 패치 (§14 기록) | mask·position·layer finite를 먼저 localize |
@@ -208,4 +208,27 @@ changes_previous_decision: yes (layer-27 fp32 잠정 완화 → 기전 수준 �
 impact_on_existing_results: 기존 결과는 이미 전부 archive/invalid — 영향 없음.
   이후 모든 수치는 prescale 패치 하에서 측정된다 (기록 필드: loader 기본값).
 source_code_revision: 42c9102
+```
+
+```text
+ID: M0-01 + G01 + G02 (일괄)
+date: 2026-08-14
+decision:
+  M0-01 = 허용오차 확정: strict logit 0.5 / operational logit 0.5 /
+          prefix cache 4.0 / task 동등성 2.5%p (m0.yaml 정식 필드로 승격)
+  G01   = baseline 목록: docs/G01-baseline-candidates.md 안 A —
+          write-time/query-agnostic {S5 KVzip-VLM 적응, kvpress Knorm 적응},
+          write-time/source-aware {H2O-style, M3의 F_w 역할},
+          read-time comparator {S1} (baseline 아님·참조선), 통제 {random, spatial-uniform}.
+          GUI-KV는 repo·license 웹 검증(TBV) 통과 시 read-time에 추가.
+  G02   = T_visual 사양: docs/G02-tvisual-spec.md 채택 (PaddleOCR 주 + Tesseract
+          fallback, T_d=Qwen2.5-VL greedy 512tok, T_u=dataset annotation 우선)
+rationale: 사용자가 권장안 일괄 승인 ("다 권장대로 해"). M0-01은 40표본 실측
+  분포(worst 0.156/0.188/1.08)의 ~3배 여유. M0-02/03의 grounding 기준선은
+  bbox 형식 수용 판정으로 1회 반복 후 별도 기록 예정.
+evidence_available_at_decision: results/smoke/m0_report.md (run m0-20260813T150604Z),
+  docs/G01-baseline-candidates.md, docs/G02-tvisual-spec.md
+changes_previous_decision: no (TBD → 최초 결정)
+impact_on_existing_results: 없음 (본실험 결과 아직 없음)
+source_code_revision: d7d8c3f 이후 커밋 예정
 ```

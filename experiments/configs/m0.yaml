@@ -28,13 +28,13 @@ thresholds:
   # 실측 (2026-08-13, 40표본 m0_measurement): strict logit worst 0.156 /
   # operational worst 0.188, median ~0.06 / prefix KV worst 1.08 /
   # 2D-4D와 keep100은 정확히 0. 제안값 = worst의 ~3배 여유.
-  strict_cache_max_abs: null
+  strict_cache_max_abs: 4.0
   proposed_strict_cache_max_abs: 4.0
-  strict_logit_max_abs: null
+  strict_logit_max_abs: 0.5
   proposed_strict_logit_max_abs: 0.5
-  operational_logit_max_abs: null
+  operational_logit_max_abs: 0.5
   proposed_operational_logit_max_abs: 0.5
-  task_equivalence_percentage_point: null
+  task_equivalence_percentage_point: 2.5
   proposed_task_equivalence_percentage_point: 2.5
 nan_diagnosis:
   status: RESOLVED_QK_PRESCALE_2026-08-13
