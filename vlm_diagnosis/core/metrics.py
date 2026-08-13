@@ -18,6 +18,13 @@ def exact_match(pred, acceptable):
     return float(any(p == normalize_text(a) for a in acceptable))
 
 
+def contains_match(pred, acceptable):
+    """정규화 후 gold가 예측 문장 안에 포함되는가 — smoke 전용 관대 지표.
+    본실험(M2-A)은 공식 ANLS + 짧은-답 prompt로 대체해야 한다."""
+    p = normalize_text(pred)
+    return float(any(normalize_text(a) in p for a in acceptable if a.strip()))
+
+
 _COORD = re.compile(r"\(?\s*(\d+(?:\.\d+)?)\s*[,;]\s*(\d+(?:\.\d+)?)\s*\)?")
 
 
