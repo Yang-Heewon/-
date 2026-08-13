@@ -1,6 +1,8 @@
 # M5 — 시간·상태 변화·다중 기억
 
 > **목적:** 단일 이미지에서 확인한 memory 재사용이 실제 시간 흐름·상태 변화·다중 memory에서도 성립하는지 검증한다.
+>
+> **왜 필요한가:** 정적 단일 이미지 실험에는 실제 agent history의 상태 변화·순서·memory 간 간섭이 반영되지 않는다.
 
 **상태:** `PLANNED` (`HERMES` upstream source만 고정)  
 **질문:** 단일 이미지에서 성립한 memory가 실제 trajectory와 여러 memory block에서도 성립하는가?

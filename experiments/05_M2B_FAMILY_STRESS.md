@@ -1,6 +1,8 @@
 # M2-B — KV compression family별 손상 방식
 
 > **목적:** 같은 byte 예산에서 KV 압축 방식별로 발생하는 정보 손실의 차이를 비교한다.
+>
+> **왜 필요한가:** sparse 방식만으로 얻은 결론은 KV compression 전체에 일반화할 수 없고, 방식마다 손상 원인이 다를 수 있다.
 
 **상태:** `PARTIAL`  
 **질문:** 같은 serialized bytes에서 SPARSE/QUANT/TRANSFORMED/HYBRID는 무엇을 다르게 잃는가?
