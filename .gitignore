@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.coverage
+
+# Local datasets and model/runtime caches are not source artifacts.
+data/
+.cache/
+
+# Raw experiment outputs stay local. README files document each result class.
+results/**/*.json
+results/**/*.jsonl
+results/**/*.log
+results/**/*.csv
+results/**/*.pt
+results/**/*.pth
+
+# Local environments and editor state.
+.venv/
+venv/
+.env
+.idea/
+.vscode/
+

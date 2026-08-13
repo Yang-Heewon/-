@@ -1,0 +1,21 @@
+stage: M5
+status: PLANNED
+run_kind: discovery
+model:
+  id: Qwen/Qwen2.5-VL-7B-Instruct
+  revision: TBD
+  dtype: float16
+  device: cuda:0
+data:
+  dataset: TBD
+  manifest: experiments/manifests/m5_trajectories.jsonl
+axes:
+  time_distance: TBD
+  state_change: [unchanged, changed, conflict]
+  blocks: [1, 2, 4]
+  composition: [independent, joint]
+  interference: [relevant_only, relevant_plus_irrelevant]
+payloads: [IMAGE, T_visual, T_episode, FULL_KV, TBD_COMPRESSED]
+budgets_keep: [0.2, 0.4, 0.6, 0.8]
+required_decisions: [G06, M5-01, M5-02]
+output: results/discovery/m5_trajectory.jsonl

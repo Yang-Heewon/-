@@ -1,0 +1,21 @@
+stage: M2B
+status: PARTIAL
+run_kind: discovery
+model:
+  id: Qwen/Qwen2.5-VL-7B-Instruct
+  revision: TBD
+  dtype: float16
+  device: cuda:0
+data:
+  manifest: experiments/manifests/m2a_full.jsonl
+budgets_keep: [0.2, 0.4, 0.6, 0.8]
+families:
+  FULL: [fp16_visual_kv]
+  SPARSE: [random, S1, TBD_PUBLISHED]
+  QUANT: [kivi_style]
+  TRANSFORMED: [merge_on_evict]
+  HYBRID: [S1_plus_quant]
+quant_bits_candidates: [2, 4, 8]
+byte_overheads: [sparse_index, position_metadata, scale, zero_point]
+required_decisions: [G03, G06, M2B-01, M2B-02]
+output: results/discovery/m2b_family_stress.jsonl

@@ -1,0 +1,18 @@
+stage: M7
+status: PLANNED
+run_kind: confirmation
+frozen_hypothesis: TBD
+primary_metric: TBD
+effect_direction: TBD
+minimum_effect: null
+models:
+  - Qwen/Qwen3-VL-8B-Instruct
+  - TBD_GUI_MODEL
+model_revisions: TBD
+data:
+  manifest: experiments/manifests/m7_confirmation.jsonl
+  external_datasets: TBD
+exclusion_rules: TBD
+analysis_code_revision: TBD
+required_decisions: [G04, G05, G06, M4-03, M7-01, M7-02]
+output: results/confirmation/m7_results.jsonl

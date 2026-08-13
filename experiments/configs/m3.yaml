@@ -1,0 +1,17 @@
+stage: M3
+status: PARTIAL
+run_kind: discovery
+model:
+  id: Qwen/Qwen2.5-VL-7B-Instruct
+  revision: TBD
+  dtype: float16
+  device: cuda:0
+data:
+  manifest: experiments/manifests/m3_pairs.jsonl
+pair_types: [T0, T1, T2, T3, T4]
+budgets_keep: [0.2, 0.4, 0.6, 0.8]
+subsets: [source_answer_aware, target_answer_aware, published_write_time, random]
+evaluate_on: [q_w, q_r]
+source_self_fidelity_threshold: null
+required_decisions: [G06, M3-01, M3-02, M3-03]
+output: results/discovery/m3_cross_eval.jsonl

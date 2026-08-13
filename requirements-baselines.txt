@@ -1,0 +1,5 @@
+# Physical KV-cache quantization backends for Transformers QuantizedCache.
+# HQQ is the tested local V100 backend. Quanto installs successfully but its
+# CUDA extension currently requires sm_80+, so use it on A100 or newer.
+hqq>=0.2.5,<0.3
+optimum-quanto>=0.2.6,<0.3

@@ -1,0 +1,9 @@
+[submodule "third_party/kvpress"]
+	path = third_party/kvpress
+	url = https://github.com/NVIDIA/kvpress.git
+[submodule "third_party/KIVI"]
+	path = third_party/KIVI
+	url = https://github.com/jy-yuan/KIVI.git
+[submodule "third_party/HERMES"]
+	path = third_party/HERMES
+	url = https://github.com/haowei-freesky/HERMES.git

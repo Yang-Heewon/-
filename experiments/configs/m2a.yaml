@@ -1,0 +1,27 @@
+stage: M2A
+status: PARTIAL
+run_kind: discovery
+model:
+  id: Qwen/Qwen2.5-VL-7B-Instruct
+  revision: TBD
+  dtype: float16
+  device: cuda:0
+data:
+  full_manifest: experiments/manifests/m2a_full.jsonl
+  diagnostic_manifest: experiments/manifests/m2a_diagnostic.jsonl
+budgets_keep: [0.2, 0.4, 0.6, 0.8]
+reference: FULL_KV
+full_split_baselines:
+  - random
+  - spatial_uniform
+  - TBD_PUBLISHED_SOTA
+diagnostic_only:
+  - target_answer_aware
+  - target_query_aware
+search:
+  primary: leave_group_out
+  grouping: spatial_2x2
+  audit: [backward_elimination, pair_removal]
+  max_forward_per_sample_budget: null
+required_decisions: [G03, G06, M2A-01, M2A-02, M2A-04, M2A-05]
+output: results/discovery/m2a_fixed_budget.jsonl
