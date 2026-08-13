@@ -46,7 +46,7 @@
 | M0-01 | strict·operational 허용오차 | TBD | one-shot vs resume와 chunk/batch perturbation을 분리 |
 | M0-02 | non-text sanity task와 표본 | TBD | icon/layout/grounding 각 최소 10개 |
 | M0-03 | IMAGE base 최소 성능 | TBD | 공식 metric으로 task별 결정 |
-| M0-04 | fp16 NaN 대응 | BLOCKED | mask·position·layer finite를 먼저 localize |
+| M0-04 | fp16 NaN 대응 | DECIDED: QK pre-scale 패치 (§14 기록) | mask·position·layer finite를 먼저 localize |
 
 ## 3. M1
 
@@ -188,4 +188,24 @@ impact_on_existing_results: 없음 (기존 결과는 전부 archive/invalid)
 source_code_revision: 14cc6a1 이후 커밋 예정
 비고: confirmation 모델(m7) revision은 G04 결정 후 별도 기록. Qwen3-VL-8B-Instruct도
 로컬 cache에 존재함을 확인 (docs/HARDWARE_CONSTRAINTS.md의 '다운로드 필요' 메모는 stale).
+```
+
+```text
+ID: M0-04
+date: 2026-08-13
+decision: fp16 NaN의 근본 원인 = HF eager attention의 `matmul(Q,K^T)*scaling` 순서.
+  스케일 전 QK^T가 fp16 matmul 출력에서 65504를 넘으면 inf→softmax NaN.
+  처방 = 수학적으로 동일한 `(Q*scaling)@K^T` 순서 (loader.patch_stable_qk_scale, 기본 ON).
+  기존 layer-27 fp32 완화는 같은 메커니즘의 우연한 부분 처방이었으며 retire
+  (LEGACY_FP32_LAYERS로 진단 비교용만 보존, DEFAULT는 빈 값).
+rationale: layer별 실측 — doc4733 q1 layer0 스케일 후 max|logit| 6145(스케일 전 ≈69.5k),
+  layer27 상시 ~10.5k(스케일 전 ≈118k). q1은 full 2D 무마스크 경로에서도 NaN이었으므로
+  mask/position 문제가 아님. mask_rows 검사는 전 조건 통과.
+evidence_available_at_decision:
+  results/smoke/nan_diagnosis/doc4733_seed-legacy_fp32-auto.json (패치 전·후),
+  results/smoke/nan_diagnosis/sweep.jsonl — 32 docs × 4 questions × 3 paths = 384/384 finite.
+changes_previous_decision: yes (layer-27 fp32 잠정 완화 → 기전 수준 패치로 대체)
+impact_on_existing_results: 기존 결과는 이미 전부 archive/invalid — 영향 없음.
+  이후 모든 수치는 prescale 패치 하에서 측정된다 (기록 필드: loader 기본값).
+source_code_revision: 42c9102
 ```

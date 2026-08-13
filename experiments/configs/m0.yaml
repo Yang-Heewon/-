@@ -1,6 +1,6 @@
 schema_version: "1.1"
 stage: M0
-status: BLOCKED
+status: PARTIAL
 run_kind: smoke
 runner: vlm_diagnosis.exps.m0_measurement
 seed: 42
@@ -30,7 +30,7 @@ thresholds:
   operational_logit_max_abs: null
   task_equivalence_percentage_point: null
 nan_diagnosis:
-  status: TBD
+  status: RESOLVED_QK_PRESCALE_2026-08-13
   trace: [mask_rows, qkv_by_layer, attention_prob_by_layer, hidden_state_by_layer]
 required_decisions: [G06, M0-01, M0-02, M0-03, M0-04]
 output: results/smoke/m0_measurement.jsonl

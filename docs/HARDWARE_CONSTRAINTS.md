@@ -35,18 +35,20 @@
   (장기 기억 프레임에서는 저장 용량 논거가 되살아남 —
   [과거 연구목표 노트](../archive/notes-ko/01-연구목표-KV압축.md) 참조)
 
-### 5. fp16 NaN 함정 (2026-08-13 실측) — 현재 M0 blocker
+### 5. fp16 NaN 함정 — **해결됨 (2026-08-13, M0-04)**
 
-- Qwen2.5-VL-7B를 fp16으로 돌리면 **logits가 NaN**이 됩니다 (증상: greedy 생성이
-  `'!47!!'` 같은 깨진 출력).
-- 원인: ViT도 잔차 스트림도 정상(absmax ~6.7k)인데, **LLM 마지막 층(27) 내부 연산**이
-  fp16 범위를 초과.
-- 1차 완화: 해당 층만 fp32로 실행 (추가 ~1GB). `vlm_diagnosis/core/loader.py`의
-  `fp32_layers="auto"`에 구현됨.
-- 후속 실측: 이 패치 이후에도 legacy D4의 S0 4D-mask 경로에서 NaN이 재현됐다. 따라서 layer 27
-  하나가 전체 원인이라고 확정하지 않는다.
-- 다음 조치: full 2D/full 4D/failing mask를 같은 position path로 맞춘 뒤 mask 행, Q/K/V,
-  attention probability, hidden state를 layer별로 추적한다. 원인 확인 전 본실험 금지.
+- 증상: Qwen2.5-VL-7B fp16에서 일부 입력의 logits가 NaN (greedy 출력 `'!47!!'` 등).
+- **근본 원인 (실측 확정)**: HF eager attention은 `matmul(Q, K^T) * scaling` 순서라
+  **스케일 전 QK^T가 fp16 matmul 출력 한계(65504)를 넘으면 inf → softmax NaN**.
+  실측: doc4733 q1의 layer 0에서 스케일 전 ≈69.5k(입력 의존적), layer 27은 상시
+  스케일 전 ≈118k — 과거 "layer 27만 fp32" 완화가 우연히 통했던 이유도 같은 메커니즘.
+  mask/position 문제 아님 (무마스크 2D 경로에서도 재현됐음).
+- **처방**: 수학적으로 동일한 `(Q*scaling) @ K^T` 순서로 교체 —
+  `vlm_diagnosis/core/loader.py`의 `patch_stable_qk_scale()` (기본 ON).
+  layer-27 fp32 패치는 retire (`LEGACY_FP32_LAYERS`로 진단 비교용만 보존).
+- **검증**: d4_mini 32문서 × 4질문 × 3경로 = 384/384 finite
+  (`results/smoke/nan_diagnosis/sweep.jsonl`). 스케일 후 max|logit| ≈ 11k로 fp16 여유.
+- `assert_finite_logits` 가드는 계속 모든 실험에 유지한다 (다른 입력 분포 대비).
 
 ## 모델 관련 메모
 

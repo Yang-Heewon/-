@@ -4,7 +4,8 @@
 >
 > **왜 필요한가:** 구현 오류도 정보 손실처럼 보일 수 있으므로, 이를 먼저 배제하지 않으면 이후 결과를 해석할 수 없다.
 
-**상태:** `BLOCKED` — fp16 masked path NaN 원인 미확인
+**상태:** `PARTIAL` — NaN 원인 확정·해결(M0-04, DECISIONS §14: QK pre-scale 패치,
+384/384 finite sweep). runner `exps/m0_measurement.py` 가동, 허용오차(M0-01) 고정 대기
 **질문:** 이후의 성능 차이가 실제 memory 개입 때문인가, 구현 artifact 때문인가?
 **실행 계약:** [configs/m0.yaml](configs/m0.yaml)
 
