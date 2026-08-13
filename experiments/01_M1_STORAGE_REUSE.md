@@ -1,5 +1,7 @@
 # M1 — 무엇을 저장하고 어떻게 재사용할 수 있는가
 
+> **목적:** 압축하기 전에도 어떤 memory payload와 재사용 조건에서 정보가 처음 손실되는지 찾는다.
+
 **상태:** `PLANNED`  
 **질문:** 압축하지 않은 상태에서도 memory payload가 어디서 처음 깨지는가?
 **실행 계약:** [configs/m1.yaml](configs/m1.yaml)

@@ -1,5 +1,7 @@
 # M5 — 시간·상태 변화·다중 기억
 
+> **목적:** 단일 이미지에서 확인한 memory 재사용이 실제 시간 흐름·상태 변화·다중 memory에서도 성립하는지 검증한다.
+
 **상태:** `PLANNED` (`HERMES` upstream source만 고정)  
 **질문:** 단일 이미지에서 성립한 memory가 실제 trajectory와 여러 memory block에서도 성립하는가?
 **실행 계약:** [configs/m5.yaml](configs/m5.yaml)

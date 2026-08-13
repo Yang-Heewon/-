@@ -1,5 +1,7 @@
 # M3 — 과거 relevance가 미래 질문으로 전이되는가
 
+> **목적:** 과거 질문에 맞춰 보존한 KV가 미래 질문에도 필요한 정보를 유지하는지 검증한다.
+
 **상태:** `PARTIAL`  
 **질문:** 미래 질문에서의 실패는 evidence 변화인가, source subset 실패인가, estimator 실패인가?
 **실행 계약:** [configs/m3.yaml](configs/m3.yaml)

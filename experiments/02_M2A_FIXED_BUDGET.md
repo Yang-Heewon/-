@@ -1,5 +1,7 @@
 # M2-A — 고정 byte 예산에서 sparse 실패를 측정한다
 
+> **목적:** 같은 byte 예산에서 sparse KV의 실패가 저장 용량 부족인지 token 선택 실패인지 구분한다.
+
 **상태:** `PARTIAL`  
 **질문:** 기존 sparse 방법은 FULL을 얼마나 보존하며, 실패는 capacity인가 selection인가?
 **실행 계약:** [configs/m2a.yaml](configs/m2a.yaml)

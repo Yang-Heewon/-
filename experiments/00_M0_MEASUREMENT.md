@@ -1,5 +1,7 @@
 # M0 — 측정 계약
 
+> **목적:** 이후 실험의 성능 차이를 믿을 수 있도록 mask·cache·수치 계산이 정확한지 검증한다.
+
 **상태:** `BLOCKED` — fp16 masked path NaN 원인 미확인
 **질문:** 이후의 성능 차이가 실제 memory 개입 때문인가, 구현 artifact 때문인가?
 **실행 계약:** [configs/m0.yaml](configs/m0.yaml)
