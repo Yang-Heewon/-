@@ -36,6 +36,8 @@ POSITIONAL_ANSWERS = {"top", "bottom", "left", "right", "center", "middle",
 # 2026-08-14 검수에서 이미지 대조로 확정된 교정.
 # key: (sample_id, qA_id or None, qB_id or None) — None은 와일드카드.
 REVIEW_OVERRIDES = [
+    (("14533", "50209", "50210"), "T2", True,
+     "검수(2차): 두 질문 모두 'NASHVILLE, TENNESSEE' 같은 블록 참조 — T2 타당, adjudication 확정 요망"),
     (("1936", "4525", "4527"), "T3", False,
      "검수 확정: 같은 값 14,500이지만 Winston/Camel의 다른 표 셀 — 근거 블록 다름"),
     (("7691", None, "61371"), "T3", False,
@@ -157,15 +159,27 @@ def main():
         ["", "adjudicated_label로 확정. 완료 후 Claude에게 알리면 κ 계산·변환 실행."],
     ], columns=["항목", "내용"])
 
-    with pd.ExcelWriter(OUT_X, engine="openpyxl") as w:
-        df.to_excel(w, sheet_name="pairs", index=False)
-        guide.to_excel(w, sheet_name="라벨_정의", index=False)
-        ws = w.sheets["pairs"]
-        widths = {"C": 28, "D": 12, "F": 44, "G": 22, "H": 12, "I": 18,
-                  "K": 44, "L": 22, "M": 12, "N": 18, "O": 14, "P": 8,
-                  "Q": 40}
-        for col, width in widths.items():
-            ws.column_dimensions[col].width = width
+    def write_xlsx(path, frame):
+        with pd.ExcelWriter(path, engine="openpyxl") as w:
+            frame.to_excel(w, sheet_name="pairs", index=False)
+            guide.to_excel(w, sheet_name="라벨_정의", index=False)
+            ws = w.sheets["pairs"]
+            widths = {"C": 28, "D": 12, "F": 44, "G": 22, "H": 12, "I": 18,
+                      "K": 44, "L": 22, "M": 12, "N": 18, "O": 14, "P": 8,
+                      "Q": 40}
+            for col, width in widths.items():
+                ws.column_dimensions[col].width = width
+
+    write_xlsx(OUT_X, df)   # master (adjudication 단계에서 사용)
+    # A/B 독립 검수용 분리 시트 — 서로의 라벨·메모가 보이지 않도록 별도 파일
+    common = ["pair_id", "sample_id", "image", "used_in",
+              "qA_id", "qA", "qA_answers", "qA_type_draft", "qA_evidence_block",
+              "qB_id", "qB", "qB_answers", "qB_type_draft", "qB_evidence_block",
+              "evidence_overlap", "draft_label", "draft_rationale", "uncertain"]
+    write_xlsx(OUT_X.replace("m3_pairs_draft", "m3_review_A"),
+               df[common + ["label_A", "notes_A"]])
+    write_xlsx(OUT_X.replace("m3_pairs_draft", "m3_review_B"),
+               df[common + ["label_B", "notes_B"]])
     with open(OUT_J, "w") as f:
         for r in rows:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")

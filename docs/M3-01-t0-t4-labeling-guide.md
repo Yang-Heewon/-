@@ -59,14 +59,14 @@ doc 4733 (ITC 광고 문서):
 | (57349, "Where in the page is the ITC logo, top or bottom?") | 합성 | T4 | OCR/semantic → layout 교차 |
 
 T2 예시(합성): "What is the passcode?" ↔ "How many characters does the code have?" —
-같은 코드 영역(overlap ≥ 0.5), 다른 답. 단 두 번째는 count 유형이므로 유형이 갈리면
+같은 코드 블록(overlap=same), 다른 답. 단 두 번째는 count 유형이므로 유형이 갈리면
 T4 규칙을 먼저 확인할 것 (이 예는 OCR↔count로 같은 텍스트 그룹 → T2 유지).
 
 ## 4. 엣지 케이스 규칙
 
-- **부분 겹침**: overlap 0.3–0.7 → 계산값 기록 + `uncertain=true`.
-- **다영역 evidence**: region 합집합으로 IoU 계산. 서로 소인 영역이 하나라도 겹치면
-  overlap에 반영된다.
+- **부분 겹침**: 블록이 겹치지만 완전히 같지 않으면 `partial` + `uncertain=true`.
+- **다영역 evidence**: 필요한 블록이 여러 개면 전부 나열하고, 두 질문의 블록 집합이
+  하나라도 공유되면 `partial`, 전부 같으면 `same`, 하나도 안 겹치면 `different`.
 - **표/차트 내부 이동**: 같은 표 안의 다른 셀은 "다른 근거"로 본다 (T3), 같은 셀의
   다른 속성(값 vs 단위)은 같은 근거 (T2).
 - **답이 이미지 밖 상식으로도 가능**: `answerable_without_image=true`를 기록하고
@@ -89,7 +89,7 @@ T4 규칙을 먼저 확인할 것 (이 예는 OCR↔count로 같은 텍스트 �
 {"dataset": "DocVQA", "dataset_revision": "<commit>", "split": "discovery",
  "sample_id": "4733", "image": "data/docvqa_manifest/4733.png",
  "pair_id": "4733_57349_57357", "question_ids": ["57349", "57357"],
- "pair_label": "T3", "evidence_overlap": 0.12,
+ "pair_label": "T3", "evidence_overlap": "different",
  "task_types": ["semantic", "OCR"], "uncertain": false,
  "adjudicated": false, "answerable_without_image": false,
  "annotators": ["A", "B"], "selection_seed": 42}
@@ -102,5 +102,5 @@ T4 규칙을 먼저 확인할 것 (이 예는 OCR↔count로 같은 텍스트 �
 
 - [ ] 가이드 채택 여부와 수정 사항 (M3-01)
 - [ ] annotator 2인과 adjudicator 지정
-- [ ] evidence overlap 경계값 0.5 (권장 시작점) 유지 여부
+- [ ] evidence overlap 3값 어휘(same/partial/different) 유지 여부
 - [ ] 이미지당 쌍 수 (M3-03과 연동; 권장: 유형별 최소 1쌍)
