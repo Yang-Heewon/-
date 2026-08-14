@@ -61,3 +61,16 @@
 - [현재 PLAN](../PLAN.md)
 - [과거 연구목표 노트](../archive/notes-ko/01-연구목표-KV압축.md)
 - [과거 선행연구 요약](../archive/notes-ko/03-선행연구-현황.md)
+
+### 6. GPU 1번 NVLink 고장 (2026-08-14 발생) — 재부팅 필요
+
+- 증상: `nvidia-smi`가 GPU1을 인식 못 함 ("Unable to determine the device handle",
+  Xid 74 = NVLink 링크 훈련 실패, dmesg 확인).
+- 2차 피해: 종료된 실험 프로세스 3개가 zombie로 남아 GPU 0/2/3에 각각 ~20GB를
+  점유한 채 회수 불가 (드라이버가 NVLink 고장으로 CUDA context를 못 놓아줌).
+  `nvidia-smi -i 1 -r` 리셋도 실패 ("No devices were found").
+- 결과: 남은 여유 ~12GB로는 Qwen2.5-VL-7B(≈17GB)를 못 올림 → **머신 재부팅
+  전까지 GPU 실험 전면 불가.**
+- 증거: 죽어가는 GPU에서 돌던 shard가 논리적으로 불가능한 값(8칸 텐서의 argmax가
+  1262)을 반환하며 죽음 — 하드웨어가 죽는 중에는 커널 결과를 신뢰할 수 없다는
+  실례. 해당 shard 데이터는 폐기함.
