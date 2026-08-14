@@ -1,20 +1,14 @@
-"""T0–T4 라벨링 초안 생성기 — 사람 검수용 Excel + 기계용 JSONL.
+"""T0–T4 라벨링 검수표 생성기 v2 — 2026-08-14 검수 반영판.
 
-실험에 실제 사용된 질문 쌍(문서당 최대 12쌍)을 나열하고, 규칙 기반 초안 라벨을
-붙인다. 초안은 질문·답 텍스트만 보고 만든 것이므로(이미지의 근거 위치는 못 봄)
-T1/T2/T4와 애매한 T3에는 uncertain=true를 달아 검수자가 이미지를 보고 확정한다.
-
-쌍 구성 (실험에서 실제 쓰인 조합):
-  - q0(write)–q1..q3        : h2o 해석에 쓰인 쌍
-  - q1..q3 상호             : 교차 평가에 쓰인 쌍
-  - q1..q3 × q4..q5         : held-out 평가에 쓰인 쌍
-
-초안 규칙 (M3-01 가이드의 판정 트리를 텍스트 정보로 근사):
-  T0: 정규화 후 질문 동일
-  T1: 답 동일 + 질문 토큰 겹침 ≥ 0.6 (바꿔 묻기 후보)
-  T2: 답 동일 + 질문 겹침 < 0.6 (같은 근거를 다르게 묻기 후보)
-  T4: 한쪽만 공간형 질문(where/side/top/position/page number 등) (유형 교차 후보)
-  T3: 그 외 (다른 근거 후보 — 기본값)
+v1 대비 변경 (검수 지적사항):
+  1. T4 휴리스틱 교체: 질문의 단어(where/located)가 아니라 **답이 위치·방향인 경우만**
+     T4 후보 (지리적 where의 답=지명 → semantic). 위치가 단서일 뿐인 OCR은 T4 아님.
+  2. T1/T2 규칙을 동결된 가이드 트리에 정합: T1=바꿔 말하기(같은 답·같은 블록 추정),
+     T2=다른 질문·같은 블록(사람 확인 필수 — 텍스트만으로 추정 불가한 경우 T3 기본).
+  3. 검수에서 확정된 교정 13건을 override로 내장.
+  4. T0 자기쌍(q1–q1 등, 파일럿 self 평가에 실제 사용됨) 추가.
+  5. 2인 검수 구조: label_A/notes_A, label_B/notes_B, adjudicated_label.
+  6. evidence 블록·overlap(same/partial/different)·질문별 task type 초안 필드 추가.
 
 실행:
   python -m vlm_diagnosis.scripts.gen_t_label_draft
@@ -32,10 +26,39 @@ ROOT = os.path.join(os.path.dirname(__file__), "..", "..")
 MANIFEST = os.path.join(ROOT, "experiments", "manifests", "m2a_diagnostic.jsonl")
 OUT_X = os.path.join(ROOT, "experiments", "manifests", "m3_pairs_draft.xlsx")
 OUT_J = os.path.join(ROOT, "experiments", "manifests", "m3_pairs_draft.jsonl")
+VERSION = "t-label-draft-v2"
 
-SPATIAL = re.compile(
-    r"\b(where|side|top|bottom|left|right|position|located|corner|page number|"
-    r"figure number|x axis|y axis|axis)\b", re.I)
+# 답 자체가 위치/방향일 때만 layout (동결된 T4 규칙)
+POSITIONAL_ANSWERS = {"top", "bottom", "left", "right", "center", "middle",
+                      "first", "last", "top left", "top right",
+                      "bottom left", "bottom right"}
+
+# 2026-08-14 검수에서 이미지 대조로 확정된 교정.
+# key: (sample_id, qA_id or None, qB_id or None) — None은 와일드카드.
+REVIEW_OVERRIDES = [
+    (("1936", "4525", "4527"), "T3", False,
+     "검수 확정: 같은 값 14,500이지만 Winston/Camel의 다른 표 셀 — 근거 블록 다름"),
+    (("7691", None, "61371"), "T3", False,
+     "검수 확정: 'Where is the coffee mill?'의 답 Kona는 지명(semantic) — layout 아님"),
+    (("14533", None, "50209"), "T3", True,
+     "검수: 'located'가 지리적 의미 — 같은 블록이면 T2로 adjudication"),
+    (("14179", None, "49081"), "T3", False,
+     "검수 확정: Nashville은 지리 정보(semantic) — layout 아님"),
+    (("14332", "49530", "49536"), "T3", False,
+     "검수 확정: figure number는 단순 OCR — 유형 교차 아님"),
+    (("14332", "49530", "49542"), "T3", False,
+     "검수 확정: figure number는 단순 OCR — 유형 교차 아님"),
+]
+
+
+def find_override(sample_id, qa_id, qb_id):
+    for (sid, a, b), label, unc, note in REVIEW_OVERRIDES:
+        if sid != str(sample_id):
+            continue
+        ids = {qa_id, qb_id}
+        if (a is None or a in ids) and (b is None or b in ids):
+            return label, unc, note
+    return None
 
 
 def token_overlap(a, b):
@@ -44,78 +67,113 @@ def token_overlap(a, b):
 
 
 def answers_equal(a, b):
-    na = {normalize_text(x) for x in a}
-    nb = {normalize_text(x) for x in b}
-    return bool(na & nb)
+    return bool({normalize_text(x) for x in a} & {normalize_text(x) for x in b})
+
+
+def task_type_draft(q):
+    """primary_task_type 초안 — 동결 규칙: 답에 필요한 능력 기준."""
+    ans = [normalize_text(x) for x in q["answers"]]
+    if any(x in POSITIONAL_ANSWERS for x in ans):
+        return "layout"
+    if re.match(r"\s*how many\b", q["question"], re.I):
+        return "count"
+    return "OCR/semantic"
 
 
 def draft_label(qa, qb):
+    """(label, uncertain, rationale). 텍스트 정보만으로의 초안 — 근거 블록은 검수자 몫."""
     if normalize_text(qa["question"]) == normalize_text(qb["question"]):
-        return "T0", "질문 동일", False
-    sa, sb = bool(SPATIAL.search(qa["question"])), bool(SPATIAL.search(qb["question"]))
-    if sa != sb:
-        return "T4", "한쪽만 공간형 질문 (유형 교차 후보)", True
+        return "T0", False, "질문 동일"
+    ta, tb = task_type_draft(qa), task_type_draft(qb)
+    if (ta == "layout") != (tb == "layout"):
+        return "T4", True, f"답 유형 교차 후보 ({ta} vs {tb}) — 동결 규칙으로 확인"
     if answers_equal(qa["answers"], qb["answers"]):
         ov = token_overlap(qa["question"], qb["question"])
         if ov >= 0.6:
-            return "T1", f"답 동일·질문 겹침 {ov:.2f} (바꿔 묻기 후보)", True
-        return "T2", f"답 동일·질문 겹침 {ov:.2f} (같은 근거 다른 질문 후보)", True
-    return "T3", "답 다름 (다른 근거 후보 — 이미지에서 근거 위치 확인 필요)", True
+            return "T1", True, f"같은 답·질문 겹침 {ov:.2f} — 바꿔 말하기인지 확인"
+        return "T2", True, (f"같은 답·다른 질문(겹침 {ov:.2f}) — 같은 블록이면 T2, "
+                            "다른 블록이면 T3")
+    return "T3", True, "답 다름 — 근거 블록이 같으면 T2로 정정 (이미지 확인 필요)"
 
 
 def main():
     rows = []
     for doc in map(json.loads, open(MANIFEST)):
         qs = doc["questions"][:6]
-        idx_pairs = [p for p in combinations(range(min(4, len(qs))), 2)]
-        idx_pairs += [(i, j) for i in (1, 2, 3) for j in (4, 5)
-                      if i < len(qs) and j < len(qs)]
-        for i, j in idx_pairs:
+
+        def add(i, j, used_in):
             qa, qb = qs[i], qs[j]
-            label, why, unc = draft_label(qa, qb)
+            if i == j:
+                label, unc, why = "T0", False, "자기쌍 (파일럿 self 평가 행)"
+            else:
+                ov = find_override(doc["sample_id"], qa["question_id"],
+                                   qb["question_id"])
+                if ov:
+                    label, unc, why = ov
+                else:
+                    label, unc, why = draft_label(qa, qb)
             rows.append({
                 "pair_id": f"{doc['sample_id']}_{qa['question_id']}_{qb['question_id']}",
-                "sample_id": doc["sample_id"],
-                "image": doc["image"],
-                "role": f"q{i}-q{j}" + (" (held-out쌍)" if j >= 4 else ""),
+                "sample_id": doc["sample_id"], "image": doc["image"],
+                "used_in": used_in,
                 "qA_id": qa["question_id"], "qA": qa["question"],
                 "qA_answers": " | ".join(qa["answers"]),
+                "qA_type_draft": task_type_draft(qa),
+                "qA_evidence_block": "",          # ← 검수자: 문단/표 셀/제목/범례/그림
                 "qB_id": qb["question_id"], "qB": qb["question"],
                 "qB_answers": " | ".join(qb["answers"]),
-                "draft_label": label, "draft_rationale": why,
-                "uncertain": unc,
-                "final_label": "",       # ← 검수자 기입
-                "reviewer_notes": "",    # ← 검수자 기입
+                "qB_type_draft": task_type_draft(qb),
+                "qB_evidence_block": "",
+                "evidence_overlap": "",           # ← 검수자: same/partial/different
+                "draft_label": label, "draft_rationale": why, "uncertain": unc,
+                "label_A": "", "notes_A": "",     # ← 검수자 A
+                "label_B": "", "notes_B": "",     # ← 검수자 B
+                "adjudicated_label": "", "adjudication_note": "",
             })
-    df = pd.DataFrame(rows)
 
+        for i in (1, 2, 3):                       # T0 자기쌍 (self 평가에 사용)
+            if i < len(qs):
+                add(i, i, "self(T0)")
+        for i, j in combinations(range(min(4, len(qs))), 2):
+            add(i, j, "episode(q0)" if i == 0 else "cross")
+        for i in (1, 2, 3):
+            for j in (4, 5):
+                if i < len(qs) and j < len(qs):
+                    add(i, j, "heldout")
+
+    df = pd.DataFrame(rows)
     guide = pd.DataFrame([
-        ["T0", "같은 질문 반복 (표현까지 동일)"],
-        ["T1", "바꿔 묻기 — 답과 근거 위치가 같고 말만 다름"],
-        ["T2", "다른 질문이지만 같은 근거 위치를 봄 (답도 대개 같음)"],
-        ["T3", "같은 이미지의 다른 근거 위치를 봄 (답 다름)"],
-        ["T4", "정보 유형이 교차 (내용 질문 ↔ 위치/공간 질문)"],
+        ["T0", "같은 질문 반복 (자기쌍 포함)"],
+        ["T1", "바꿔 말하기 — 같은 답·같은 evidence 블록, wording만 다름"],
+        ["T2", "바꿔 말하기가 아닌 다른 질문인데 evidence 블록이 same (답은 같을 수도 다를 수도)"],
+        ["T3", "evidence 블록이 다름"],
+        ["T4", "primary_task_type 교차: {OCR/semantic/count} ↔ {layout/grounding/icon}"],
         ["", ""],
-        ["검수 방법", "image 열의 사진을 열고, 두 질문 각각 '어디를 봐야 답할 수 있나'를"],
-        ["", "확인 → 그 위치가 같으면 T1/T2, 다르면 T3, 유형이 갈리면 T4."],
-        ["", "final_label에 확정 라벨 기입. 애매하면 notes에 이유."],
-    ], columns=["라벨", "정의"])
+        ["T4 동결 규칙", "답에 필요한 능력 기준. 답이 지명이면 semantic (where라는 단어 무관)."],
+        ["", "위치가 단서일 뿐 답이 글자면 OCR. 답 자체가 위치/방향일 때만 layout."],
+        ["evidence 단위", "의미 블록: 문단 / 표 셀 / 제목·머리글 / 범례 / 그림 영역"],
+        ["overlap", "same / partial / different (partial이면 uncertain 표시)"],
+        ["검수 절차", "A·B가 독립적으로 label_A/label_B 기입 → 불일치·uncertain만"],
+        ["", "adjudicated_label로 확정. 완료 후 Claude에게 알리면 κ 계산·변환 실행."],
+    ], columns=["항목", "내용"])
 
     with pd.ExcelWriter(OUT_X, engine="openpyxl") as w:
         df.to_excel(w, sheet_name="pairs", index=False)
         guide.to_excel(w, sheet_name="라벨_정의", index=False)
         ws = w.sheets["pairs"]
-        for col, width in {"E": 46, "H": 46, "F": 24, "I": 24, "K": 40,
-                           "C": 30, "D": 14}.items():
+        widths = {"C": 28, "D": 12, "F": 44, "G": 22, "H": 12, "I": 18,
+                  "K": 44, "L": 22, "M": 12, "N": 18, "O": 14, "P": 8,
+                  "Q": 40}
+        for col, width in widths.items():
             ws.column_dimensions[col].width = width
     with open(OUT_J, "w") as f:
         for r in rows:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
-    n_unc = sum(r["uncertain"] for r in rows)
-    by = df["draft_label"].value_counts().to_dict()
-    print(f"쌍 {len(rows)}개 (문서 {df['sample_id'].nunique()}개), "
-          f"검수 필요 {n_unc}개, 초안 분포 {by}")
+    by = df[df.used_in != "self(T0)"]["draft_label"].value_counts().to_dict()
+    n_ovr = sum(1 for r in rows if "검수" in r["draft_rationale"])
+    print(f"[{VERSION}] 쌍 {len(rows)}개 (자기쌍 {sum(df.used_in=='self(T0)')} 포함), "
+          f"override {n_ovr}건 적용, 비자기쌍 초안 분포 {by}")
     print(f"→ {OUT_X}\n→ {OUT_J}")
 
 

@@ -9,13 +9,14 @@
 
 ## 1. 조작적 정의
 
-**Evidence region**: 사람이 그 질문에 답하기 위해 반드시 봐야 하는 이미지 영역(bbox 또는
-UI element 집합). 라벨러는 각 질문에 대해 evidence region을 먼저 그리고(또는 기존
-annotation을 사용), 쌍 비교는 그 다음에 한다.
+**Evidence region (단위 동결, 2026-08-14 검수 반영)**: 사람이 그 질문에 답하기 위해
+반드시 봐야 하는 **의미 블록** — 문단 / 표의 셀 / 제목·머리글 / 범례 / 그림 영역 중
+하나로 기술한다 (word-level bbox나 line이 아니라 블록 단위로 고정). 라벨러는 각
+질문의 evidence 블록을 먼저 적고, 쌍 비교는 그 다음에 한다.
 
-**Evidence overlap**: `IoU(region_w, region_r)` 또는 element 집합의 Jaccard.
-경계값: overlap ≥ 0.5 → "같은 근거", < 0.5 → "다른 근거". 0.3–0.7 구간이면
-`uncertain=true`를 함께 기록한다.
+**Evidence overlap (3값으로 동결)**: 두 질문의 evidence 블록이
+`same`(같은 블록) / `partial`(겹치지만 다른 부분) / `different`(다른 블록).
+`partial`이면 `uncertain=true`를 함께 기록한다.
 
 **정보 유형**: M4와 동일한 6분류 — OCR / semantic / layout / grounding / icon / count.
 질문이 요구하는 유형을 각 질문에 하나 이상 부여한다.
@@ -23,15 +24,27 @@ annotation을 사용), 쌍 비교는 그 다음에 한다.
 ## 2. 판정 트리
 
 ```text
-1. q_w == q_r (문자열 동일 또는 공백/대소문자 차이뿐)?          → T0
-2. 답과 evidence region이 같고 wording만 다른가?                → T1
-3. 답은 다르지만 evidence overlap ≥ 0.5 인가?                   → T2
-4. evidence overlap < 0.5 이고 정보 유형은 같은 그룹인가?       → T3
-5. 정보 유형이 {semantic, OCR} ↔ {layout, grounding, icon} 를
-   가로지르는가? (evidence 이동 여부와 무관)                    → T4
+1. q_w == q_r (문자열 동일 또는 공백/대소문자 차이뿐)?           → T0
+2. 단순 바꿔 말하기인가? (같은 답 + 같은 evidence 블록 +
+   wording만 변화)                                              → T1
+3. 바꿔 말하기가 아닌 다른 질문인데 evidence 블록이 same인가?
+   (답은 같을 수도 다를 수도 있음 — 예: 같은 셀의 값 vs 단위)    → T2
+4. primary_task_type이 {semantic, OCR, count} ↔
+   {layout, grounding, icon}을 가로지르는가?                     → T4
+5. 그 외 (evidence 블록이 다름)                                  → T3
 ```
 
-- 4·5가 동시에 성립하면 **T4가 우선**한다 (유형 교차가 더 강한 조건).
+**T4 판정 규칙 (동결, 2026-08-14 검수 반영)**: 질문에 쓰인 단어가 아니라
+**답을 내는 데 필요한 능력의 유형(primary_task_type)**으로 판정한다.
+
+- "Where is the coffee mill?"의 답이 지명(`Kona`)이면 **지리적 내용 = semantic**이다.
+  `where/located` 같은 단어만으로 layout이 아니다.
+- "top에 적힌 연도", "x축 변수", "underlined heading"처럼 **위치가 답을 찾는 단서일
+  뿐이고 답 자체는 글자**면 **OCR**이다. layout은 **답 자체가 위치·방향·배치**일 때만
+  (예: "그 단어는 왼쪽/오른쪽 어디에 있나?" → 답 "left").
+- page number / figure number 읽기는 단순 OCR이다.
+- `requires_spatial` 등은 보조 관찰 필드로만 기록하고 T4 판정에 직접 쓰지 않는다.
+
 - 어느 단계에서도 판단이 갈리면 `uncertain=true` + adjudication으로 보낸다.
 
 ## 3. 예시 (d4_mini 실측 질문 사용)
