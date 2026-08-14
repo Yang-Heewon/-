@@ -41,6 +41,10 @@ def main():
     ap.add_argument("--nshards", type=int, default=1)
     ap.add_argument("--budgets", default="0.05,0.2")
     ap.add_argument("--questions-per-doc", type=int, default=3)
+    ap.add_argument("--eval-mode", choices=["cross", "heldout"], default="cross",
+                    help="cross: 소스 질문 간 교차 / heldout: 합집합을 만들 때 "
+                         "쓰지 않은 질문(4~5번)에서 평가")
+    ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--max-new-tokens", type=int, default=32)
     ap.add_argument("--out", default="results/smoke/m3_pilot.jsonl")
     a = ap.parse_args()
@@ -68,9 +72,16 @@ def main():
         for di, row in enumerate(rows):
             t0 = time.time()
             img = Image.open(os.path.join(ROOT, row["image"])).convert("RGB")
-            qs = row["questions"][1:1 + a.questions_per_doc]  # track1 평가 질문과 동일
+            qs = row["questions"][1:1 + a.questions_per_doc]  # 소스 질문 (교차와 동일)
             if len(qs) < 2:
                 continue
+            if a.eval_mode == "heldout":
+                qs_eval = row["questions"][1 + a.questions_per_doc:
+                                           3 + a.questions_per_doc]
+                if not qs_eval:      # held-out 질문이 없는 문서는 건너뜀
+                    continue
+            else:
+                qs_eval = None
             # 질문별 s1 점수와 입력 준비
             ins_list, s1_list = [], []
             for q in qs:
@@ -85,6 +96,14 @@ def main():
             e = dense_storage(shape)
             full_bytes = e.payload_bytes + e.metadata_bytes + e.position_bytes
 
+            if qs_eval is not None:      # held-out: s5·random 대조를 위해 준비
+                import zlib
+                s5_doc = S.score_s5(model, processor, img, a.device).cpu()
+                gen = torch.Generator().manual_seed(
+                    zlib.crc32(f"{a.seed}:{row['sample_id']}".encode()) & 0x7FFFFFFF)
+                ins_eval = [S.vlm_inputs(processor, img, q["question"] + BRIEF,
+                                         a.device) for q in qs_eval]
+
             for B in budgets:
                 k = max_keep_for_budget(shape, int(B * full_bytes), "sparse")
                 keeps = [set(torch.topk(s, min(k, n_vis)).indices.tolist())
@@ -92,6 +111,12 @@ def main():
                 union = set().union(*keeps)
                 subsets = {f"S_q{i}": ks for i, ks in enumerate(keeps)}
                 subsets["UNION"] = union
+                if qs_eval is not None:
+                    m = len(union)   # 같은 실제 크기의 공정 대조군
+                    subsets["S5_MATCHED"] = set(
+                        torch.topk(s5_doc, min(m, n_vis)).indices.tolist())
+                    subsets["RANDOM_MATCHED"] = set(
+                        torch.randperm(n_vis, generator=gen)[:m].tolist())
                 # 겹침 기록 (판단 근거가 아니라 관찰값)
                 jac = {}
                 for i in range(len(keeps)):
@@ -99,9 +124,11 @@ def main():
                         inter = len(keeps[i] & keeps[j])
                         jac[f"q{i}q{j}"] = round(
                             inter / max(len(keeps[i] | keeps[j]), 1), 3)
+                eval_set = (list(enumerate(qs)) if qs_eval is None
+                            else list(enumerate(qs_eval)))
                 for src, keep in subsets.items():
-                    for j, q in enumerate(qs):
-                        ins = ins_list[j]
+                    for j, q in eval_set:
+                        ins = (ins_list[j] if qs_eval is None else ins_eval[j])
                         sp = token_spans(ins["input_ids"], model.config)
                         vis, vis_end = sp["visual"], sp["vis_end"]
                         evict = torch.tensor(
@@ -115,7 +142,8 @@ def main():
                             "run_id": run_id, "sample_id": row["sample_id"],
                             "subset_from": src, "eval_q_idx": j,
                             "eval_question_id": q["question_id"],
-                            "is_self": src == f"S_q{j}",
+                            "eval_mode": a.eval_mode,
+                            "is_self": qs_eval is None and src == f"S_q{j}",
                             "budget_per_question": B,
                             "keep_tokens": len(keep),
                             "keep_ratio_actual": round(len(keep) / n_vis, 4),
