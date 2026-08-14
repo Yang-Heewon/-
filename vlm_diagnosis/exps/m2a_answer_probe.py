@@ -106,6 +106,59 @@ def fill_budget(ranked_groups, k):
     return set(keep)
 
 
+def _group_mask(ctx, groups, kept_group_ids):
+    kept = {o for gi in kept_group_ids for o in groups[gi]}
+    cols = torch.tensor(
+        [int(ctx["vis"][o]) for o in range(len(ctx["vis"])) if o not in kept],
+        device=ctx["dev"])
+    return evict_columns(ctx["m4"], cols, ctx["vis_end"] + 1)
+
+
+@torch.no_grad()
+def swap_search(model, ctx, groups, k_tokens, s1_scores,
+                batch=8, passes=2, max_forwards=200):
+    """s1 상위로 초기화한 뒤, (약한 in-그룹 ↔ out-그룹) 교환을 gold logp로 수락하는
+    hill-climb. 낱개 하락값이 아니라 '집합 전체의 logp'만 본다 (비가산성 회피)."""
+    gm = [sum(float(s1_scores[o]) for o in g) for g in groups]
+    order = sorted(range(len(groups)), key=lambda i: -gm[i])
+    in_set, tok = set(), 0
+    for gi in order:
+        if tok >= k_tokens:
+            break
+        in_set.add(gi)
+        tok += len(groups[gi])
+    init_set = set(in_set)
+    cur_lp = float(_batched_answer_logp(
+        model, ctx["emb"], _group_mask(ctx, groups, in_set),
+        ctx["pos"], ctx["labels"])[0])
+    init_lp, n_fwd = cur_lp, 1
+    out_list = [i for i in range(len(groups)) if i not in in_set]
+    for _ in range(passes):
+        improved = False
+        for s in range(0, len(out_list), batch):
+            if n_fwd >= max_forwards:
+                break
+            weakest = min(in_set, key=lambda i: gm[i])
+            cands = [c for c in out_list[s:s + batch] if c not in in_set]
+            if not cands:
+                continue
+            masks = torch.cat([
+                _group_mask(ctx, groups, (in_set - {weakest}) | {c})
+                for c in cands])
+            lps = _batched_answer_logp(model, ctx["emb"], masks,
+                                       ctx["pos"], ctx["labels"])
+            n_fwd += 1
+            best = int(torch.argmax(lps))
+            if float(lps[best]) > cur_lp:
+                in_set.remove(weakest)
+                in_set.add(cands[best])
+                cur_lp = float(lps[best])
+                improved = True
+        if not improved or n_fwd >= max_forwards:
+            break
+    return init_set, init_lp, in_set, cur_lp, n_fwd
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifest", default="experiments/manifests/m2a_diagnostic.jsonl")
@@ -114,6 +167,9 @@ def main():
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--nshards", type=int, default=1)
     ap.add_argument("--budgets", default="0.05,0.1,0.2,0.4")
+    ap.add_argument("--search", choices=["lgo", "swap"], default="lgo",
+                    help="lgo: 한 그룹씩 가려보기(비가산성 취약) / "
+                         "swap: s1 초기화 + 집합 단위 교환 hill-climb")
     ap.add_argument("--max-new-tokens", type=int, default=32)
     ap.add_argument("--max-forwards-per-question", type=int, default=400)
     ap.add_argument("--out", default="results/smoke/m2a_answer_probe.jsonl")
@@ -163,35 +219,54 @@ def main():
                    "emb": _merged_embeds(model, full, ins["pixel_values"],
                                          ins["image_grid_thw"], vis),
                    "labels": full[0, P:]}
-            ranked, drops, n_fwd = rank_groups(model, ctx, groups)
             shape = KVShape(layers=N_LAYERS, batch=1, kv_heads=N_KV_HEADS,
                             tokens=n_vis, head_dim=HEAD_DIM)
             e = dense_storage(shape)
             full_bytes = e.payload_bytes + e.metadata_bytes + e.position_bytes
+
+            if a.search == "lgo":
+                ranked, drops, n_fwd = rank_groups(model, ctx, groups)
+            else:
+                s1_scores = S.score_s1(model, processor, img, q_text,
+                                       a.device).cpu()
+
             for B in budgets:
                 k = max_keep_for_budget(shape, int(B * full_bytes), "sparse")
-                keep = fill_budget(ranked, k)
-                evict = torch.tensor(
-                    [int(vis[o]) for o in range(n_vis) if o not in keep],
-                    device=a.device)
-                pred = greedy_generate_masked(
-                    model, processor, ins, max_new_tokens=a.max_new_tokens,
-                    evict_cols=evict, row_start=vis_end + 1)
-                f.write(json.dumps({
-                    "run_id": run_id, "dataset": row["dataset"],
-                    "split": "smoke", "sample_id": row["sample_id"],
-                    "question_id": q["question_id"], "gold": golds,
-                    "condition_id": f"answer_probe@B{int(B*100)}",
-                    "selection_timing": "diagnostic",
-                    "keep_ratio_target": B, "keep_tokens": k,
-                    "n_visual": n_vis, "n_groups": len(groups),
-                    "search_forwards": n_fwd,
-                    "top_group_drops": [round(d, 2) for d in drops[:5]],
-                    "prediction": pred,
-                    "anls": anls(pred, golds),
-                    "em": exact_match(pred, golds)},
-                    ensure_ascii=False) + "\n")
-                f.flush()
+                if a.search == "lgo":
+                    variants = [("lgo", fill_budget(ranked, k), None, n_fwd,
+                                 [round(d, 2) for d in drops[:5]])]
+                else:
+                    ini, ini_lp, fin, fin_lp, nf = swap_search(
+                        model, ctx, groups, k, s1_scores)
+                    variants = [
+                        ("s1_init", {o for gi in ini for o in groups[gi]},
+                         ini_lp, nf, None),
+                        ("swap_final", {o for gi in fin for o in groups[gi]},
+                         fin_lp, nf, None)]
+                for tag, keep, gold_lp, nf_used, top_drops in variants:
+                    evict = torch.tensor(
+                        [int(vis[o]) for o in range(n_vis) if o not in keep],
+                        device=a.device)
+                    pred = greedy_generate_masked(
+                        model, processor, ins, max_new_tokens=a.max_new_tokens,
+                        evict_cols=evict, row_start=vis_end + 1)
+                    f.write(json.dumps({
+                        "run_id": run_id, "dataset": row["dataset"],
+                        "split": "smoke", "sample_id": row["sample_id"],
+                        "question_id": q["question_id"], "gold": golds,
+                        "condition_id": f"probe_{tag}@B{int(B*100)}",
+                        "selection_timing": "diagnostic",
+                        "search": a.search,
+                        "keep_ratio_target": B, "keep_tokens": len(keep),
+                        "n_visual": n_vis, "n_groups": len(groups),
+                        "search_forwards": nf_used,
+                        "gold_logp_of_subset": gold_lp,
+                        "top_group_drops": top_drops,
+                        "prediction": pred,
+                        "anls": anls(pred, golds),
+                        "em": exact_match(pred, golds)},
+                        ensure_ascii=False) + "\n")
+                    f.flush()
             print(f"[{di+1}/{len(rows)}] {row['sample_id']} groups={len(groups)} "
                   f"fwd={n_fwd} {time.time()-t0:.0f}s", flush=True)
     print(f"[saved] {out_path}")
