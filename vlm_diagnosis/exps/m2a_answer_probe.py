@@ -238,6 +238,7 @@ def main():
                 else:
                     ini, ini_lp, fin, fin_lp, nf = swap_search(
                         model, ctx, groups, k, s1_scores)
+                    n_fwd = nf
                     variants = [
                         ("s1_init", {o for gi in ini for o in groups[gi]},
                          ini_lp, nf, None),
