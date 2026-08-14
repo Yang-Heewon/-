@@ -108,6 +108,8 @@ def main():
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--nshards", type=int, default=1)
     ap.add_argument("--budgets", default="0.2,0.4,0.6,0.8")
+    ap.add_argument("--selectors", default=None,
+                    help="쉼표 목록으로 일부만 실행 (예: s1,random). 기본 전부")
     ap.add_argument("--eval-questions-per-doc", type=int, default=3)
     ap.add_argument("--max-new-tokens", type=int, default=32)
     ap.add_argument("--seed", type=int, default=42)
@@ -177,6 +179,9 @@ def main():
                 s1 = S.score_s1(model, processor, img, q_text, a.device).cpu()
                 scores = {"random": rnd, "spatial_uniform": None,
                           "knorm": knorm, "s5": s5, "h2o": h2o, "s1": s1}
+                if a.selectors:
+                    wanted = set(a.selectors.split(","))
+                    scores = {k: v for k, v in scores.items() if k in wanted}
                 for B in budgets:
                     k = max_keep_for_budget(shape, int(B * full_bytes), "sparse")
                     act = _sparse_bytes(shape, k)
