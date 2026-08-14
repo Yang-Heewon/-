@@ -47,7 +47,7 @@ BRIEF = " Answer with a single word or phrase."
 N_LAYERS, N_KV_HEADS, HEAD_DIM = 28, 4, 128
 
 TIMING = {"random": "write_time", "spatial_uniform": "write_time",
-          "knorm": "write_time", "s5": "write_time",
+          "knorm": "write_time", "knorm_high": "write_time", "s5": "write_time",
           "h2o": "write_time_source_aware", "s1": "read_time"}
 
 
@@ -178,7 +178,8 @@ def main():
                                    ensure_ascii=False) + "\n")
                 s1 = S.score_s1(model, processor, img, q_text, a.device).cpu()
                 scores = {"random": rnd, "spatial_uniform": None,
-                          "knorm": knorm, "s5": s5, "h2o": h2o, "s1": s1}
+                          "knorm": knorm, "knorm_high": -knorm,
+                          "s5": s5, "h2o": h2o, "s1": s1}
                 if a.selectors:
                     wanted = set(a.selectors.split(","))
                     scores = {k: v for k, v in scores.items() if k in wanted}
