@@ -115,7 +115,7 @@ main{max-width:1240px; margin:0 auto; padding:24px 20px 64px;
 .card{
   background:var(--surface); border:1px solid var(--line); border-radius:12px;
   box-shadow:var(--shadow); overflow:hidden; display:grid;
-  grid-template-columns:minmax(0,320px) minmax(0,1fr);
+  grid-template-columns:minmax(0,400px) minmax(0,1fr);
 }
 @media (max-width:820px){.card{grid-template-columns:1fr}}
 .shot{padding:16px; background:var(--surface-2); border-right:1px solid var(--line);
@@ -146,12 +146,19 @@ main{max-width:1240px; margin:0 auto; padding:24px 20px 64px;
   display:flex; flex-direction:column; gap:4px}
 .para div{font-size:13px; color:var(--ink-soft)}
 .note{font-size:12px; color:var(--muted)}
-dialog{border:none; padding:0; background:transparent; max-width:96vw; max-height:96vh}
-dialog::backdrop{background:rgba(8,11,15,.82)}
-dialog img{max-width:96vw; max-height:88vh; border-radius:8px; display:block}
-dialog form{display:flex; justify-content:flex-end; padding-top:8px}
+dialog{border:none; padding:0; background:transparent; max-width:98vw; max-height:98vh}
+dialog::backdrop{background:rgba(8,11,15,.88)}
+.zwrap{overflow:auto; max-width:98vw; max-height:88vh; background:var(--surface);
+  border-radius:8px; border:1px solid var(--line)}
+.zwrap img{display:block; width:auto; max-width:none; border-radius:6px}
+.zwrap.fit img{max-width:100%; height:auto}
+.zbar{display:flex; justify-content:space-between; align-items:center; gap:10px;
+  padding:8px 2px 0; color:#e8edf2; font-size:12px}
+.zbar .zhint{opacity:.75}
+.zbar div{display:flex; gap:8px}
 dialog button{font:inherit; font-size:13px; padding:6px 14px; border-radius:7px;
   border:1px solid var(--line); background:var(--surface); color:var(--ink); cursor:pointer}
+dialog button:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
 footer{max-width:1240px; margin:0 auto; padding:0 20px 48px; font-size:12px;
   color:var(--muted); display:flex; flex-direction:column; gap:4px}
 .empty{padding:40px; text-align:center; color:var(--muted)}
@@ -183,8 +190,13 @@ function apply(){
 q.addEventListener('input',apply);
 chips.forEach(c=>c.addEventListener('click',()=>{
   c.setAttribute('aria-pressed',c.getAttribute('aria-pressed')==='true'?'false':'true');apply();}));
+const zwrap=document.getElementById('zwrap'), zfit=document.getElementById('zfit');
 document.querySelectorAll('.shot img').forEach(im=>im.addEventListener('click',()=>{
-  dimg.src=im.src; dimg.alt=im.alt; dlg.showModal();}));
+  dimg.src=im.src; dimg.alt=im.alt; zwrap.classList.remove('fit');
+  zfit.textContent='화면에 맞추기'; dlg.showModal(); zwrap.scrollTop=0;}));
+zfit.addEventListener('click',()=>{
+  const fit=zwrap.classList.toggle('fit');
+  zfit.textContent=fit?'실제 크기(100%)':'화면에 맞추기';});
 """
 
 
@@ -214,8 +226,8 @@ def build():
     print("이미지 인코딩:")
     budget = a.budget_mb * 1e6
     # 문서는 잔글씨 판독이 필요해 크게, 화면은 배치 확인이 목적이라 작게
-    doc_imgs = encode_all([d["image"] for d in docs], 1500, 72, budget * 0.72, "DocVQA")
-    scr_imgs = encode_all([s["image"] for s in screens], 560, 72, budget * 0.28, "ScreenQA")
+    doc_imgs = encode_all([d["image"] for d in docs], 1800, 74, budget * 0.78, "DocVQA")
+    scr_imgs = encode_all([s["image"] for s in screens], 620, 74, budget * 0.22, "ScreenQA")
 
     ROLE = {0: "q0 · write 에피소드", 1: "q1 · 소스", 2: "q2 · 소스", 3: "q3 · 소스",
             4: "q4 · held-out", 5: "q5 · held-out"}
@@ -248,7 +260,7 @@ def build():
             f'<article class="card" data-search="{html.escape(search, quote=True)}" '
             f'data-flags="{flags}">'
             f'<div class="shot"><img src="data:image/jpeg;base64,{doc_imgs[d["image"]]}" '
-            f'alt="문서 {html.escape(sid)}"><div class="meta mono">{html.escape(d["image"])}</div></div>'
+            f'alt="문서 {html.escape(sid)}"><div class="meta mono">{html.escape(d["image"])} · 클릭하면 원본 크기</div></div>'
             f'<div class="body"><div class="idline"><span class="sid mono">{html.escape(sid)}</span>'
             f'<span class="note">질문 {len(qs)}개 · 쌍 {pair_n.get(sid, 0)}개 · '
             f'DocVQA {html.escape(d["dataset_revision"][:7])}</span></div>'
@@ -329,7 +341,12 @@ def build():
 <span>이미지는 열람용으로 축소·재압축했습니다. 정확한 판정은 원본 경로의 파일로 확인하세요.</span>
 <span>DocVQA(lmms-lab) · ScreenQA(CC BY 4.0) 주석 + RICO 스크린샷 — 각 데이터의 이용 조건을 따릅니다.</span>
 </footer>
-<dialog id="zoom"><img id="zimg" alt=""><form method="dialog"><button>닫기</button></form></dialog>
+<dialog id="zoom">
+<div class="zwrap" id="zwrap"><img id="zimg" alt=""></div>
+<div class="zbar"><span class="zhint">스크롤·드래그로 이동 · Esc로 닫기</span>
+<div><button id="zfit" type="button">화면에 맞추기</button>
+<form method="dialog"><button>닫기</button></form></div></div>
+</dialog>
 <script>{JS}</script>"""
 
     with open(a.out, "w") as f:
