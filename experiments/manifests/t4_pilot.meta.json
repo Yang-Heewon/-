@@ -1,26 +1,39 @@
 {
  "created": "2026-08-15",
  "version": 2,
- "generator": "vlm_diagnosis/scripts/gen_t4_pilot.py (v2, audit-corrected; v1 scratchpad script superseded)",
+ "generator": "vlm_diagnosis/scripts/gen_t4_pilot.py",
  "selection_seed": 42,
  "source": {
-  "annotations": "github.com/google-research-datasets/screen_qa answers_and_bboxes/validation.json + short_answers/validation.json (1:1 aligned, verified)",
-  "annotations_revision": "1dfdbccaf56948821b5fa8ffe5d186fe4751e46d (repo HEAD at v1 build; local copy data/screenqa_probe/)",
+  "annotations": "google-research-datasets/screen_qa validation full+short",
+  "annotations_revision": "1dfdbccaf56948821b5fa8ffe5d186fe4751e46d",
+  "answers_and_bboxes_validation_sha256": "1e32e5e06ea9bfe3421baceae800ee22de2481663b818ff47f9c6350b36ca138",
+  "short_answers_validation_sha256": "4420ce951f6bad386e2549680f6c31025073501ef0f82a72afaefc43432da743",
   "images": "HF community mirror bevaya/RICO-ScreenQA, validation parquet shards",
   "images_revision": "44c8508ea528b4d4e035cc06e28d7baf8db09ec6",
-  "residual_risk": "Images come from a community mirror, not the official RICO release (see docs/screenqa-access-smoke.md §6). All selected images decode and match official annotation image_width/image_height. Duplicate-text detection can only see ANNOTATED evidence elements, not the whole screen — duplicates outside annotations (the v1 Facebook/Applesauce failures) are only caught by human review; the v1 offenders are hard-blacklisted."
+  "residual_risk": "community mirror rather than official RICO release; automatic duplicate checks see annotated evidence only, so exhaustive post-generation visual audit is mandatory"
  },
- "question_id_convention": "sqa_val_<idx> where idx = 0-based line index in official validation.json; _loc1 = half template, _loc2 = grid3x3 template",
- "selection_rule": ">=3 content questions with usable short answers AND >=1 valid (half, grid3x3) location pair from two distinct source questions; prefer 1080x1920; seeded shuffle, base 25 screens, balance-driven expansion up to 35 (stop when every grid class has >=2 items and half split differs by <=1, or no remaining screen can supply a needed class)",
+ "visual_audit": {
+  "input": "experiments/manifests/t4_visual_audit.jsonl",
+  "sha256": "95960d6d39bfc12686dce86ec2da938775f88bf09b8743579df2b9e741edfec3",
+  "join_policy": "exact question-id set and exact payload match; missing, unknown, duplicate, malformed, or unverified records fail",
+  "generated": 52,
+  "passed": 51,
+  "failed": 1,
+  "failed_location_ids": [
+   "sqa_val_03982_loc1"
+  ],
+  "policy": "failed locations are removed post-generation and are never replaced without a new exhaustive audit"
+ },
+ "question_id_convention": "sqa_val_<0-based validation index>; loc1=half, loc2=grid3x3",
+ "selection_rule": ">=3 usable content questions and a distinct-qid half/grid candidate pair; 1080x1920 first; seeded base 25; greedy balance expansion capped at 35",
  "location_generation_rules": {
-  "position_rule": "ACTUAL implementation: position is judged from the median over annotator bbox CENTERS (median of per-annotator center-x, median of center-y). The recorded source_bbox is the element-wise median of annotator bboxes and is NOT used for position judgment.",
-  "half_template": "top/bottom by median center-y vs H/2; EXCLUDE center-y in 40-60% of H (±10% midline band); EXCLUDE annotator half disagreement",
-  "grid3x3_template": "cell by median center vs thirds; EXCLUDE center within ±5% of any cell boundary; EXCLUDE annotator cell disagreement",
-  "common_exclusions": "answer with 0 or >1 ui_elements per annotator; annotator text mismatch; normalized text <2 chars or <2 alphanumeric chars (single-char and punctuation-padded single-glyph answers); UI-state answers {on,off,yes,no,true,false}; star-rating answers (regex '^\\d+([.,]\\d+)?\\s*(stars?|★+)$' — rendered as widgets, not text); bare 1-2 digit integers (pervasive-duplicate risk in counts/scores/table cells); login-flow brand names {facebook,google,twitter,instagram} (rendered in both header and footer disclaimer of login dialogs); source bbox wider than 60% of screen width (full-row/field bboxes); same normalized text at 2+ distinct on-screen locations (center delta >2% of W or H, unconditional — even same half); candidate text occurring as a whole-word substring of a different annotated element elsewhere on screen (quoted text would match multiple visible strings); status bar (center-y < 3% of H); audit blacklist (below)",
-  "candidate_selection": "seeded-random among balance-optimal candidates (greedy fills underrepresented grid classes first, then half; ties broken by seeded rng.choice) — v1 first-valid bias removed"
+  "position_rule": "median over per-annotator bbox centers; source_bbox is the rounded element-wise median for display only",
+  "half_template": "top/bottom; reject center-y in closed 40-60% band and annotator half disagreement",
+  "grid3x3_template": "thirds; reject centers within closed +/-5% boundary bands and annotator cell disagreement",
+  "duplicate_scope": "automatic exact/substring checks cover annotated evidence elements only; visual audit covers the screen",
+  "candidate_selection": "locally greedy underrepresented-grid then half; seeded random tie break"
  },
  "audit_exclusions": {
-  "date": "2026-08-15",
   "failed_v1_location_questions": [
    "sqa_val_01472_loc1",
    "sqa_val_02356_loc2",
@@ -41,8 +54,7 @@
    "sqa_val_04404": "v1 _loc1 'Facebook': text appears at top AND bottom of screen (duplicate outside annotated elements)",
    "sqa_val_08120": "v1 _loc1 'Applesauce': text duplicated on screen (duplicate outside annotated elements)"
   },
-  "note": "blacklist applies to the SOURCE question, so both templates from a flagged source are excluded (sqa_val_08120_loc2 was not itself flagged but its source is blacklisted)",
-  "v2_visual_check_exclusions": {
+  "v2_preselection_visual_exclusions": {
    "sqa_val_05364": "v2 candidate 'Sat, 11 Feb': same timestamp text rendered on two news items (nytimes + washingtonpost rows); duplicate outside annotated elements -> ambiguous location",
    "sqa_val_03018": "v2 candidate 'SAM App': text repeats in the headline 'SAM App for Anxiety - Free Download' (duplicate outside annotated elements; unconditional duplicate rule applies even though both occurrences are in the top half)",
    "sqa_val_06821": "v2 candidate '1975': bbox sits on a wallpaper region with no visibly rendered text (annotated answer not legible on screen)",
@@ -68,47 +80,113 @@
   "screen_exclusions": {
    "54145": "mirror image is landscape 1920x1080 but the official annotation says 1080x1920 — dimension mismatch would corrupt position labels"
   },
-  "v2_visual_check_note": "the v2 build itself was visually audited in rounds: each build's 10-question seeded sanity sample was rendered with bboxes drawn on the images and inspected, and the build was regenerated after each fix until a full sample passed. Failures found and fixed: a star-rating widget answer (systematic rating-widget filter added), a timestamp duplicated outside the annotated elements (source question blacklisted), a candidate text contained in another element's text (systematic whole-word substring filter added), an answer with a single legible glyph (systematic >=2-alphanumeric filter added), a bare 2-digit number duplicated in a score table (systematic short-bare-integer filter added), an answer with no visibly rendered text at the bbox (blacklisted), and further duplicate-outside-annotations cases (blacklisted)."
+  "post_generation_failures": {
+   "sqa_val_03982_loc1": "'Announce'가 화면에 4회 반복되고 상·하반부에 모두 존재 → 답 모호 (annotation 밖 중복이라 자동 필터가 놓침)"
+  }
  },
  "pairs_manifest": {
-  "file": "experiments/manifests/t4_pairs_draft.jsonl",
-  "direction": "content_to_location ONLY. location->content is excluded because every generated location question embeds the source answer text verbatim — presenting it first leaks the content answer (answer leakage).",
-  "pending_precedence_decision": "pairs where the location question's source element IS the content question's evidence (same source question) are marked pending_precedence_decision=true and carry no draft label (T2-vs-T4 precedence unresolved, docs/M3-01)",
-  "draft_rule": "cross-source pairs: draft_label=T4 when content type_draft is OCR/semantic or count, else uncertain; ALL rows uncertain=true for human review"
+  "file": "t4_pairs_draft.jsonl",
+  "direction": "content_to_location only, fixed as the pilot causal order. Reverse direction directly leaks qA only for same/partial-evidence pairs; cross-evidence reverse pairs are omitted for directional consistency, not because all contain qA answers.",
+  "evidence_rule": "same qid => same; otherwise canonical text plus IoU>=0.8 or smaller-box containment>=0.9 => same; annotator-only exact intersection => partial; otherwise different",
+  "pending_precedence_decision": "only same-evidence plus left-group (OCR/semantic/count)->layout crossings",
+  "type_policy": "selection/status/tab cues are grounding+uncertain and cannot receive automatic T4; every pair remains uncertain until two-reviewer adjudication"
  },
  "statistical_plan": {
-  "unit_of_analysis": "screen (each screen contributes 1 half + 1 grid question; questions within a screen are not independent)",
-  "resampling": "screen-cluster bootstrap (resample screens with replacement, keep all questions of a resampled screen)",
-  "metrics": "per-template balanced accuracy and macro-F1 (class imbalance is bounded but not zero; majority baselines recorded below)"
+  "unit_of_analysis": "screen-macro; locations and content-location pairs within a screen are not independent",
+  "metric_definition": {
+   "raw_accuracy": "mean of each screen's mean correctness; each screen has total weight 1 regardless of question count",
+   "balanced_accuracy": "macro recall on a screen-weighted confusion matrix; each question weight is 1 divided by the number of evaluated questions on its screen",
+   "macro_f1": "fixed-label macro-F1 on the same screen-weighted confusion matrix",
+   "per_template": "also report half and grid3x3 separately; within each template each retained screen contributes at most one question",
+   "zero_support": "fixed labels with zero gold or prediction support remain in the average with recall/F1=0 (zero_division=0)"
+  },
+  "bootstrap": {
+   "replicates": 10000,
+   "seed": 20260815,
+   "confidence_level": 0.95,
+   "interval": "percentile [2.5%,97.5%]",
+   "resampling_unit": "screen with replacement",
+   "labels": "fixed post-audit label universe and gold labels in every replicate; no relabeling or class dropping",
+   "paired_delta": "for method comparisons, reuse the identical sampled screen indices per replicate and report method-A minus method-B"
+  },
+  "metrics": [
+   "raw_accuracy",
+   "balanced_accuracy",
+   "macro_f1"
+  ]
  },
- "stats": {
-  "screens_scanned": 3485,
-  "screens_eligible": 488,
-  "eligible_1080x1920": 375,
+ "pre_audit_generation_stats": {
   "screens_selected": 26,
+  "location_questions": 52,
+  "half_distribution": {
+   "top half": 13,
+   "bottom half": 13
+  },
+  "grid_distribution": {
+   "top-left": 3,
+   "top-center": 4,
+   "top-right": 3,
+   "middle-left": 4,
+   "center": 2,
+   "middle-right": 4,
+   "bottom-left": 2,
+   "bottom-center": 2,
+   "bottom-right": 2
+  },
   "expansion_beyond_base": [
    {
     "added_image_id": 43764,
     "reason": "grid:bottom-center count=1"
    }
-  ],
+  ]
+ },
+ "stats": {
+  "authoritative_stage": "post_visual_audit",
+  "screens_scanned": 3485,
+  "screens_eligible": 488,
+  "eligible_1080x1920": 375,
+  "screens_selected": 26,
+  "screen_location_count_distribution": {
+   "2": 25,
+   "1": 1
+  },
   "content_questions": 114,
-  "location_questions": 52,
+  "location_questions": 51,
   "content_type_draft_distribution": {
-   "OCR/semantic": 106,
+   "OCR/semantic": 75,
+   "grounding": 31,
    "count": 8
   },
-  "pairs_total": 228,
-  "pairs_pending_precedence": 52,
-  "pairs_draft_T4": 176,
-  "pairs_draft_uncertain": 0,
+  "content_type_uncertain": 106,
+  "pairs_total": 223,
+  "pairs_pending_precedence": 37,
+  "pair_draft_label_distribution": {
+   "T4": 124,
+   "pending": 37,
+   "uncertain": 45,
+   "T2": 17
+  },
+  "evidence_overlap_draft_distribution": {
+   "different": 166,
+   "same": 54,
+   "partial": 3
+  },
   "achieved_balance": {
    "half": {
     "distribution": {
-     "bottom half": 13,
-     "top half": 13
+     "top half": 13,
+     "bottom half": 12
     },
-    "majority_baseline": 0.5
+    "majority_baseline": {
+     "predicted_label": "top half",
+     "raw_accuracy": 0.52,
+     "balanced_accuracy": 0.5,
+     "macro_f1": 0.3421,
+     "fixed_label_universe": [
+      "top half",
+      "bottom half"
+     ]
+    }
    },
    "grid3x3": {
     "distribution": {
@@ -122,7 +200,23 @@
      "bottom-center": 2,
      "bottom-right": 2
     },
-    "majority_baseline": 0.1538
+    "majority_baseline": {
+     "predicted_label": "top-center",
+     "raw_accuracy": 0.1538,
+     "balanced_accuracy": 0.1111,
+     "macro_f1": 0.0296,
+     "fixed_label_universe": [
+      "top-left",
+      "top-center",
+      "top-right",
+      "middle-left",
+      "center",
+      "middle-right",
+      "bottom-left",
+      "bottom-center",
+      "bottom-right"
+     ]
+    }
    }
   },
   "screen_exclusions": {
@@ -152,25 +246,7 @@
    "sampled": 10,
    "matched": 10,
    "sheet": "t4_review.xlsx#sanity_check"
-  },
-  "final_location_questions": 51,
-  "half_distribution": {
-   "bottom half": 12,
-   "top half": 13
-  },
-  "grid_distribution": {
-   "middle-right": 4,
-   "middle-left": 4,
-   "bottom-left": 2,
-   "top-center": 4,
-   "top-left": 3,
-   "top-right": 3,
-   "bottom-center": 2,
-   "bottom-right": 2,
-   "center": 2
-  },
-  "majority_baseline_half": 0.52,
-  "majority_baseline_grid": 0.154
+  }
  },
  "image_provenance": {
   "13920": {
@@ -329,27 +405,5 @@
    "shard": "validation-00002-of-00003.parquet",
    "row_group": 26
   }
- },
- "visual_audit": {
-  "date": "2026-08-15",
-  "policy": "모든 위치 질문을 이미지로 직접 검증 (bbox 산술만으로는 아이콘·전체행 bbox·중복 텍스트를 못 잡음)",
-  "records": "experiments/manifests/t4_visual_audit.jsonl",
-  "verified_total": 52,
-  "passed": 51,
-  "failed": 1,
-  "by_verifier": {
-   "agent": 26,
-   "agent+opus_spotcheck": 5,
-   "opus_direct": 21
-  },
-  "post_generation_visual_exclusions": {
-   "sqa_val_03982_loc1": "'Announce'가 화면에 4회 반복되고 상·하반부에 모두 존재 → 답 모호 (annotation 밖 중복이라 자동 필터가 놓침)"
-  },
-  "spotcheck": "에이전트 검증분 31개 중 무작위 5개를 Opus가 이미지로 재확인 → 5/5 일치",
-  "borderline_flags": [
-   "sqa_val_04725_loc2",
-   "sqa_val_07265_loc2",
-   "sqa_val_07956_loc2"
-  ]
  }
 }

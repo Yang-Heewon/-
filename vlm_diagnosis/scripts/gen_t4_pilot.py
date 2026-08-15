@@ -33,7 +33,10 @@ HF community mirror bevaya/RICO-ScreenQA at pinned revision IMAGES_REVISION via
 row-group-targeted parquet reads (only the needed row groups' image column chunks are
 fetched). Downloaded images are verified against annotation width/height.
 
-Outputs (relative to --root):
+Inputs also include the committed, exhaustive post-generation visual audit:
+  experiments/manifests/t4_visual_audit.jsonl
+
+Outputs (written only with --output-dir or --write-in-place):
   experiments/manifests/t4_pilot.jsonl        one row per screen (content + location
                                               questions; content questions carry
                                               type_draft per the frozen T4 rule)
@@ -45,8 +48,9 @@ Outputs (relative to --root):
                                               sanity_check sheet (10 seeded recomputes)
 
 CLI:
-  python vlm_diagnosis/scripts/gen_t4_pilot.py            # defaults: --root repo, --seed 42
-  python vlm_diagnosis/scripts/gen_t4_pilot.py --root /root/research/heewon/VLM --seed 42
+  python vlm_diagnosis/scripts/gen_t4_pilot.py            # safe preview; writes nothing
+  python vlm_diagnosis/scripts/gen_t4_pilot.py --output-dir /tmp/t4-preview
+  python vlm_diagnosis/scripts/gen_t4_pilot.py --write-in-place  # explicit overwrite
 
 Requires: pillow, openpyxl, pyarrow, huggingface_hub (network only if images missing).
 """
@@ -71,8 +75,15 @@ MIDLINE_BAND = (0.40, 0.60)   # half template: exclude center-y in 40-60% of H
 GRID_BOUNDARY_BAND = 0.05     # grid template: exclude center within 5% of 1/3, 2/3
 STATUS_BAR_FRAC = 0.03
 MIN_CONTENT_Q = 3
+BOOTSTRAP_REPLICATES = 10_000
+BOOTSTRAP_SEED = 20260815
+EVIDENCE_IOU_SAME = 0.80
+EVIDENCE_CONTAIN_SAME = 0.90
 
 ANNOTATIONS_REVISION = '1dfdbccaf56948821b5fa8ffe5d186fe4751e46d'
+FULL_ANNOTATIONS_SHA256 = '1e32e5e06ea9bfe3421baceae800ee22de2481663b818ff47f9c6350b36ca138'
+SHORT_ANNOTATIONS_SHA256 = '4420ce951f6bad386e2549680f6c31025073501ef0f82a72afaefc43432da743'
+VISUAL_AUDIT_SHA256 = '95960d6d39bfc12686dce86ec2da938775f88bf09b8743579df2b9e741edfec3'
 IMAGES_REPO = 'bevaya/RICO-ScreenQA'
 IMAGES_REVISION = '44c8508ea528b4d4e035cc06e28d7baf8db09ec6'
 IMAGES_SHARDS = ['validation-00000-of-00003.parquet',
@@ -106,9 +117,6 @@ AUDIT_FAILED_LOC_IDS = sorted(BAD_V1_LOC_IDS - {'sqa_val_08120_loc2'})
 # not detectable from the annotations alone, found by inspecting the 10-question
 # seeded sample with bboxes drawn on the images.
 V2_VISUAL_EXCLUSIONS = {
-    'sqa_val_03982': "opus 시각 검증(2026-08-15): 'Announce'가 화면에 4회 렌더링되어 "
-                     "상·하반부에 모두 존재 → half 질문의 답이 모호. annotation에는 "
-                     "1개 element만 있어 자동 중복 필터가 놓친 사례",
     'sqa_val_05364': "v2 candidate 'Sat, 11 Feb': same timestamp text rendered on "
                      "two news items (nytimes + washingtonpost rows); duplicate "
                      "outside annotated elements -> ambiguous location",
@@ -204,14 +212,152 @@ def norm(t):
 
 
 def content_type_draft(question, answers):
-    """Frozen T4 rule (docs/M3-01, 2026-08-14): answer IS a position -> layout;
-    'how many' -> count; UI-state answers are excluded from location generation
-    anyway; everything else -> OCR/semantic."""
+    """Return a conservative primary-type draft plus its uncertainty.
+
+    The frozen rule is about the ability needed to answer, not just answer syntax.
+    Selection/status/tab questions therefore remain grounding drafts and are never
+    auto-promoted to T4.  OCR and semantic are intentionally kept as one left-side
+    group because distinguishing them reliably still requires human review.
+    """
+    q = norm(question)
     if any(norm(a) in POSITIONAL_ANSWERS for a in answers):
-        return 'layout'
-    if 'how many' in question.lower():
-        return 'count'
-    return 'OCR/semantic'
+        return {'type_draft': 'layout', 'type_uncertain': False,
+                'type_reason': 'answer itself is a position/layout label'}
+    if 'how many' in q:
+        return {'type_draft': 'count', 'type_uncertain': False,
+                'type_reason': "question contains 'how many'"}
+    grounding_cue = re.search(
+        r'\b(selected|chosen|status|setting|activated|checked|highlighted|tab)\b', q)
+    if grounding_cue:
+        return {'type_draft': 'grounding', 'type_uncertain': True,
+                'type_reason': 'selection/status/tab cue requires visual state grounding'}
+    return {'type_draft': 'OCR/semantic', 'type_uncertain': True,
+            'type_reason': 'automatic rule cannot reliably separate OCR from semantic'}
+
+
+def _qid_index(qid):
+    return int(qid.split('_')[-1])
+
+
+def _bbox_iou_and_containment(a, b):
+    if not a or not b:
+        return 0.0, 0.0
+    x1, y1 = max(a[0], b[0]), max(a[1], b[1])
+    x2, y2 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0, x2 - x1) * max(0, y2 - y1)
+    area_a = max(0, a[2] - a[0]) * max(0, a[3] - a[1])
+    area_b = max(0, b[2] - b[0]) * max(0, b[3] - b[1])
+    union = area_a + area_b - inter
+    smaller = min(area_a, area_b)
+    return (inter / union if union else 0.0,
+            inter / smaller if smaller else 0.0)
+
+
+def _whole_word_related(a, b):
+    """Equal text or one normalized string occurring as a whole-word phrase."""
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    short, long = sorted((a, b), key=len)
+    return bool(re.search(r'(?<!\w)' + re.escape(short) + r'(?!\w)', long))
+
+
+def canonical_evidence(record):
+    """Conservative one-block draft from official per-annotator evidence.
+
+    A canonical block is emitted only when a normalized element text has strict
+    majority support among the annotators' single-element selections.
+    Raw blocks retain per-annotator support internally so a non-canonical exact
+    overlap can be classified as ``partial`` rather than silently ``different``.
+    """
+    ground_truth = record.get('ground_truth') or []
+    single = []
+    raw_block_support = Counter()
+    multi_element_annotations = 0
+    for g in ground_truth:
+        ui = g.get('ui_elements') or []
+        if len(ui) > 1:
+            multi_element_annotations += 1
+        # Count annotators, not duplicate elements within one annotation.
+        for block in {(norm(e.get('text', '')), tuple(e['bounds'])) for e in ui}:
+            raw_block_support[block] += 1
+        if len(ui) == 1:
+            single.append(ui[0])
+    result = {'text': None, 'bbox': None, 'support': 0,
+              'annotators': len(ground_truth),
+              'raw_block_support': raw_block_support,
+              'multi_element_annotations': multi_element_annotations}
+    if not single:
+        return result
+    # Cluster by both normalized text and spatially compatible bboxes. Text-only
+    # majority would create a phantom median between two repeated elements.
+    clusters = []
+    for e in single:
+        text = norm(e.get('text', ''))
+        bbox = list(e['bounds'])
+        compatible = []
+        for cluster in clusters:
+            if cluster['text'] != text:
+                continue
+            center = [statistics.median(b[k] for b in cluster['bboxes'])
+                      for k in range(4)]
+            iou, containment = _bbox_iou_and_containment(bbox, center)
+            if iou >= EVIDENCE_IOU_SAME or containment >= EVIDENCE_CONTAIN_SAME:
+                compatible.append((iou, containment, cluster))
+        if compatible:
+            max(compatible, key=lambda item: (item[0], item[1]))[2]['bboxes'].append(bbox)
+        else:
+            clusters.append({'text': text, 'bboxes': [bbox]})
+    best = min(clusters, key=lambda c: (
+        -len(c['bboxes']), c['text'], tuple(c['bboxes'][0])))
+    best_count = len(best['bboxes'])
+    if best_count < len(ground_truth) // 2 + 1:
+        return result
+    result.update({
+        'text': best['text'],
+        'bbox': [round(statistics.median(b[k] for b in best['bboxes']))
+                 for k in range(4)],
+        'support': best_count,
+    })
+    return result
+
+
+def compare_evidence(qA_id, qB_source_id, full):
+    """Draft same/partial/different relation between official evidence blocks."""
+    a = canonical_evidence(full[_qid_index(qA_id)])
+    b = canonical_evidence(full[_qid_index(qB_source_id)])
+    if qA_id == qB_source_id:
+        overlap = 'same'
+        reason = 'same official source question id'
+    else:
+        iou, containment = _bbox_iou_and_containment(a['bbox'], b['bbox'])
+        text_related = _whole_word_related(a['text'], b['text'])
+        if (a['bbox'] and b['bbox'] and text_related and
+                (iou >= EVIDENCE_IOU_SAME or containment >= EVIDENCE_CONTAIN_SAME)):
+            overlap = 'same'
+            reason = (f'canonical block match: text_related=true, IoU={iou:.3f}, '
+                      f'smaller_containment={containment:.3f}')
+        elif set(a['raw_block_support']) & set(b['raw_block_support']):
+            overlap = 'partial'
+            shared = set(a['raw_block_support']) & set(b['raw_block_support'])
+            block = max(shared, key=lambda x: (
+                min(a['raw_block_support'][x], b['raw_block_support'][x]), x))
+            reason = (
+                'exact raw block overlap without a canonical whole-block match: '
+                f'qA_support={a["raw_block_support"][block]}/{a["annotators"]}, '
+                f'qB_support={b["raw_block_support"][block]}/{b["annotators"]}, '
+                f'qA_multi_element_annotations={a["multi_element_annotations"]}, '
+                f'qB_multi_element_annotations={b["multi_element_annotations"]}; '
+                'human review required')
+        else:
+            overlap = 'different'
+            reason = (f'no conservative canonical match: text_related={text_related}, '
+                      f'IoU={iou:.3f}, smaller_containment={containment:.3f}')
+    internal = {'raw_block_support', 'multi_element_annotations'}
+    public_a = {k: v for k, v in a.items() if k not in internal}
+    public_b = {k: v for k, v in b.items() if k not in internal}
+    return overlap, reason, public_a, public_b
 
 
 # ---------------------------------------------------------------- candidate rules
@@ -394,30 +540,45 @@ def ensure_images(selected, root, old_meta):
     img_dir = os.path.join(root, 'data', 'screenqa_pilot')
     os.makedirs(img_dir, exist_ok=True)
     old_prov = (old_meta or {}).get('image_provenance', {})
-    prov, missing = {}, []
+    if old_prov:
+        recorded_revision = (old_meta or {}).get('source', {}).get('images_revision')
+        if recorded_revision != IMAGES_REVISION:
+            raise RuntimeError(
+                'cannot trust recorded image hashes from a different or missing '
+                f'mirror revision: {recorded_revision!r} != {IMAGES_REVISION!r}')
+    prov, missing, unverified = {}, [], set()
     for e in selected:
         sid = str(e['image_id'])
         path = os.path.join(img_dir, f'{sid}.jpg')
         if os.path.exists(path):
             sha = sha256_file(path)
-            p = dict(old_prov.get(sid) or {'file_name': f'images/rico/{sid}.jpg'})
+            old_entry = old_prov.get(sid, {})
+            p = dict(old_entry or {'file_name': f'images/rico/{sid}.jpg'})
             p['sha256'] = sha
-            if old_prov.get(sid, {}).get('sha256') not in (None, sha):
-                p['note'] = 'local file sha256 differs from v1 meta record'
+            expected_sha = old_entry.get('sha256')
+            if expected_sha not in (None, sha):
+                raise RuntimeError(
+                    f'image {sid}: local sha256 {sha} differs from recorded pinned '
+                    f'mirror sha256 {expected_sha}')
+            if expected_sha is None:
+                unverified.add(sid)
             prov[sid] = p
         else:
             missing.append(sid)
-    need_scan = bool(missing) or any('shard' not in prov[s] for s in prov)
+    need_scan = (bool(missing) or bool(unverified) or
+                 any('shard' not in prov[s] for s in prov))
     if not need_scan:
         return prov
     import pyarrow.parquet as pq
     from huggingface_hub import HfFileSystem
     fs = HfFileSystem()
     base = f'datasets/{IMAGES_REPO}@{IMAGES_REVISION}/data'
-    wanted = {f'images/rico/{sid}.jpg': sid
-              for sid in (set(missing) | {s for s in prov if 'shard' not in prov[s]})}
+    wanted_sids = (set(missing) | unverified |
+                   {s for s in prov if 'shard' not in prov[s]})
+    wanted = {f'images/rico/{sid}.jpg': sid for sid in wanted_sids}
     print(f'[images] scanning shards for {len(wanted)} screens '
-          f'({len(missing)} to download)...', flush=True)
+          f'({len(missing)} to download, {len(unverified)} to authenticate)...',
+          flush=True)
     for shard in IMAGES_SHARDS:
         if not wanted:
             break
@@ -435,25 +596,75 @@ def ensure_images(selected, root, old_meta):
                 if not first:
                     continue
                 hits = [(i, n) for n, i in first.items()]
-                dl = [(i, n) for i, n in hits if wanted[n] in missing]
-                tbl = pf.read_row_group(rg, columns=['file_name', 'image']) if dl else None
+                need_bytes = [(i, n) for i, n in hits
+                              if wanted[n] in missing or wanted[n] in unverified]
+                tbl = (pf.read_row_group(rg, columns=['file_name', 'image'])
+                       if need_bytes else None)
                 for i, n in hits:
                     sid = wanted.pop(n)
                     entry = prov.get(sid, {'file_name': n})
                     entry.update({'file_name': n, 'shard': shard, 'row_group': rg})
-                    if sid in missing:
+                    if sid in missing or sid in unverified:
                         img = tbl.column('image')[i].as_py()
                         data = img['bytes'] if isinstance(img, dict) else img
+                        mirror_sha = hashlib.sha256(data).hexdigest()
+                    if sid in missing:
                         path = os.path.join(img_dir, f'{sid}.jpg')
                         with open(path, 'wb') as out:
                             out.write(data)
-                        entry['sha256'] = sha256_file(path)
+                        entry['sha256'] = mirror_sha
                         print(f'[images] downloaded {sid}.jpg '
                               f'({shard} rg{rg}, {len(data)} bytes)', flush=True)
+                    elif sid in unverified:
+                        if entry['sha256'] != mirror_sha:
+                            raise RuntimeError(
+                                f'image {sid}: local sha256 {entry["sha256"]} differs '
+                                f'from pinned mirror sha256 {mirror_sha}')
+                        entry['verified_against_pinned_mirror'] = True
                     prov[sid] = entry
     if wanted:
         raise RuntimeError(f'images not found in mirror: {sorted(wanted.values())}')
     return prov
+
+
+def validate_existing_images(selected, root, old_meta):
+    """Read-only validation for safe preview mode.
+
+    Missing files are reported (an explicit write run may fetch them), while every
+    image that already exists must match both its recorded hash, when available,
+    and the official annotation dimensions.
+    """
+    from PIL import Image
+    old_prov = (old_meta or {}).get('image_provenance', {})
+    if old_prov:
+        recorded_revision = (old_meta or {}).get('source', {}).get('images_revision')
+        if recorded_revision != IMAGES_REVISION:
+            raise RuntimeError(
+                'cannot trust recorded image hashes from a different or missing '
+                f'mirror revision: {recorded_revision!r} != {IMAGES_REVISION!r}')
+    missing = []
+    for e in selected:
+        sid = str(e['image_id'])
+        path = os.path.join(root, 'data', 'screenqa_pilot', f'{sid}.jpg')
+        if not os.path.exists(path):
+            missing.append(sid)
+            continue
+        actual_sha = sha256_file(path)
+        expected_sha = old_prov.get(sid, {}).get('sha256')
+        if expected_sha is not None and actual_sha != expected_sha:
+            raise RuntimeError(
+                f'image {sid}: local sha256 {actual_sha} differs from recorded '
+                f'pinned mirror sha256 {expected_sha}')
+        with Image.open(path) as im:
+            im.load()
+            if im.size != (e['W'], e['H']):
+                raise RuntimeError(
+                    f'image {sid}: file {im.size} != annotation ({e["W"]}, {e["H"]})')
+    unverified = [str(e['image_id']) for e in selected
+                  if (os.path.exists(os.path.join(
+                      root, 'data', 'screenqa_pilot', f'{e["image_id"]}.jpg')) and
+                      old_prov.get(str(e['image_id']), {}).get('sha256') is None)]
+    return missing, unverified
 
 
 def verify_images(selected, root):
@@ -468,6 +679,101 @@ def verify_images(selected, root):
                     f'({e["W"]}, {e["H"]})')
 
 
+def apply_visual_audit(rows, audit_path):
+    """Exact-join the committed exhaustive audit and remove failed locations.
+
+    The audit is deliberately post-generation: ``Announce`` must be generated in
+    the original seeded assignment and then removed, otherwise preselection changes
+    RNG tie-breaking and silently substitutes unaudited questions.
+    """
+    actual_sha = sha256_file(audit_path)
+    if actual_sha != VISUAL_AUDIT_SHA256:
+        raise RuntimeError(
+            f'visual audit sha256 mismatch: {actual_sha} != {VISUAL_AUDIT_SHA256}')
+    records = []
+    with open(audit_path) as f:
+        for lineno, line in enumerate(f, 1):
+            if not line.strip():
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(f'{audit_path}:{lineno}: invalid JSON: {exc}') from exc
+
+    generated = {}
+    for row in rows:
+        for loc in row['location_questions']:
+            qid = loc['question_id']
+            if qid in generated:
+                raise RuntimeError(f'duplicate generated location id: {qid}')
+            generated[qid] = {
+                'question_id': qid,
+                'sample_id': row['sample_id'],
+                'image': row['image'],
+                'template': loc['template'],
+                'claimed_answer': loc['answers'][0],
+                'source_answer_text': loc['source_answer_text'],
+                'source_bbox': loc['source_bbox'],
+            }
+    audited = {}
+    for rec in records:
+        qid = rec.get('question_id')
+        if not qid:
+            raise RuntimeError('visual audit record missing question_id')
+        if qid in audited:
+            raise RuntimeError(f'duplicate visual audit question_id: {qid}')
+        audited[qid] = rec
+    missing = sorted(set(generated) - set(audited))
+    unknown = sorted(set(audited) - set(generated))
+    if missing or unknown:
+        raise RuntimeError(
+            f'visual audit exact join failed: missing={missing}, unknown={unknown}')
+
+    join_fields = ('question_id', 'sample_id', 'image', 'template',
+                   'claimed_answer', 'source_answer_text', 'source_bbox')
+    for qid, expected in generated.items():
+        rec = audited[qid]
+        mismatches = {k: (rec.get(k), expected[k]) for k in join_fields
+                      if rec.get(k) != expected[k]}
+        if mismatches:
+            raise RuntimeError(f'visual audit payload mismatch for {qid}: {mismatches}')
+        verdict = rec.get('visual_verdict')
+        if verdict not in {'pass', 'fail'}:
+            raise RuntimeError(f'visual audit unknown verdict for {qid}: {verdict!r}')
+        if not rec.get('verified_by') or not rec.get('verified_date'):
+            raise RuntimeError(f'visual audit missing verifier/date for {qid}')
+
+    kept_rows = []
+    for row in rows:
+        row['location_questions'] = [
+            loc for loc in row['location_questions']
+            if audited[loc['question_id']]['visual_verdict'] == 'pass'
+        ]
+        if row['location_questions']:
+            kept_rows.append(row)
+    rows[:] = kept_rows
+    all_loc = [(row, loc) for row in rows for loc in row['location_questions']]
+    counts = Counter(rec['visual_verdict'] for rec in records)
+    return all_loc, records, counts, actual_sha
+
+
+def majority_baseline(counts, labels):
+    """Constant-majority raw accuracy, balanced accuracy and fixed-label macro-F1."""
+    total = sum(counts.values())
+    if not total:
+        raise RuntimeError('cannot compute a majority baseline on an empty template')
+    predicted = max(labels, key=lambda label: counts[label])
+    prevalence = counts[predicted] / total
+    majority_f1 = 2 * prevalence / (1 + prevalence)
+    return {
+        'predicted_label': predicted,
+        'raw_accuracy': round(prevalence, 4),
+        'balanced_accuracy': round(1 / len(labels), 4),
+        'macro_f1': round(majority_f1 / len(labels), 4),
+        'fixed_label_universe': list(labels),
+    }
+
+
 # ---------------------------------------------------------------- main build
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -475,14 +781,59 @@ def main():
         os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
     ap.add_argument('--root', default=default_root)
     ap.add_argument('--seed', type=int, default=SEED_DEFAULT)
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument('--output-dir',
+                      help='write generated manifest files to this directory')
+    mode.add_argument('--write-in-place', action='store_true',
+                      help='explicitly overwrite --root/experiments/manifests outputs')
+    mode.add_argument('--dry-run', action='store_true',
+                      help='validate and preview only (also the default with no mode)')
+    ap.add_argument('--visual-audit',
+                    help='audit JSONL input (default: committed manifest directory)')
     args = ap.parse_args()
-    root, seed = args.root, args.seed
+    root, seed = os.path.abspath(args.root), args.seed
+    write_outputs = bool(args.output_dir or args.write_in_place)
+    if args.output_dir:
+        expanded_output = os.path.expanduser(args.output_dir)
+        out_dir = (expanded_output if os.path.isabs(expanded_output) else
+                   os.path.join(root, expanded_output))
+        out_dir = os.path.abspath(out_dir)
+    else:
+        out_dir = os.path.join(root, 'experiments', 'manifests')
+    audit_path = os.path.abspath(
+        args.visual_audit or
+        os.path.join(root, 'experiments', 'manifests', 't4_visual_audit.jsonl'))
+    if not write_outputs:
+        print('[safe preview] no files will be written; use --output-dir or '
+              '--write-in-place to persist outputs')
 
-    full = json.load(open(f'{root}/data/screenqa_probe/official/answers_and_bboxes/validation.json'))
-    short = json.load(open(f'{root}/data/screenqa_probe/official/short_answers/validation.json'))
-    assert len(full) == len(short)
+    full_path = os.path.join(
+        root, 'data', 'screenqa_probe', 'official', 'answers_and_bboxes',
+        'validation.json')
+    short_path = os.path.join(
+        root, 'data', 'screenqa_probe', 'official', 'short_answers',
+        'validation.json')
+    source_hashes = {
+        'answers_and_bboxes_validation_sha256': sha256_file(full_path),
+        'short_answers_validation_sha256': sha256_file(short_path),
+    }
+    expected_hashes = {
+        'answers_and_bboxes_validation_sha256': FULL_ANNOTATIONS_SHA256,
+        'short_answers_validation_sha256': SHORT_ANNOTATIONS_SHA256,
+    }
+    if source_hashes != expected_hashes:
+        raise RuntimeError(
+            f'annotation input sha256 mismatch: actual={source_hashes}, '
+            f'expected={expected_hashes}')
+    with open(full_path) as f:
+        full = json.load(f)
+    with open(short_path) as f:
+        short = json.load(f)
+    if len(full) != len(short):
+        raise RuntimeError(f'full/short length mismatch: {len(full)} != {len(short)}')
     for a, b in zip(full, short):
-        assert a['image_id'] == b['image_id'] and a['question'] == b['question']
+        if a['image_id'] != b['image_id'] or a['question'] != b['question']:
+            raise RuntimeError('full/short annotation alignment mismatch')
 
     screens = defaultdict(list)
     for idx, (f, s) in enumerate(zip(full, short)):
@@ -537,12 +888,7 @@ def main():
     print(f'selected screens: {len(selected)} (expanded by {len(expansion_log)})')
     print('half:', dict(ch), ' grid:', dict(cg))
 
-    # ---- build per-screen records
-    meta_path = f'{root}/experiments/manifests/t4_pilot.meta.json'
-    old_meta = json.load(open(meta_path)) if os.path.exists(meta_path) else None
-    prov = ensure_images(selected, root, old_meta)
-    verify_images(selected, root)
-
+    # ---- build per-screen records (still pre-audit: exactly 2 locations/screen)
     rows, all_loc, all_content = [], [], []
     for e in sorted(selected, key=lambda e: e['image_id']):
         hqid, gqid = chosen[e['image_id']]
@@ -567,10 +913,10 @@ def main():
         content_recs = []
         for q in e['content_qs']:
             answers = list(dict.fromkeys(q['short_answers']))
+            type_info = content_type_draft(q['question'], answers)
             content_recs.append({
                 'question_id': q['qid'], 'question': q['question'],
-                'answers': answers,
-                'type_draft': content_type_draft(q['question'], answers)})
+                'answers': answers, **type_info})
         row = {
             'dataset': 'ScreenQA', 'dataset_revision': ANNOTATIONS_REVISION,
             'source_split': 'validation', 'split': 'pilot',
@@ -586,34 +932,56 @@ def main():
         all_loc.extend([(row, r) for r in loc_recs])
         all_content.extend([(row, r) for r in content_recs])
 
+    pre_audit_all_loc = list(all_loc)
+    pre_half = Counter(r['answers'][0] for _, r in pre_audit_all_loc
+                       if r['template'] == 'half')
+    pre_grid = Counter(r['answers'][0] for _, r in pre_audit_all_loc
+                       if r['template'] == 'grid3x3')
+    pre_loc_ids = {r['question_id'] for _, r in pre_audit_all_loc}
+    if not pre_loc_ids.isdisjoint(BAD_V1_LOC_IDS):
+        raise RuntimeError('a v1 audit-failed location question was regenerated')
+
+    # ---- exact post-generation visual-audit join; failures are removed, not replaced
+    all_loc, visual_records, visual_counts, visual_audit_sha = apply_visual_audit(
+        rows, audit_path)
+    all_content = [(row, r) for row in rows for r in row['content_questions']]
     final_loc_ids = {r['question_id'] for _, r in all_loc}
-    assert final_loc_ids.isdisjoint(BAD_V1_LOC_IDS), 'audit-failed question regenerated!'
+    failed_loc_ids = {r['question_id'] for r in visual_records
+                      if r['visual_verdict'] == 'fail'}
+    if final_loc_ids & failed_loc_ids:
+        raise RuntimeError('visual-audit failure survived post-generation filtering')
 
-    with open(f'{root}/experiments/manifests/t4_pilot.jsonl', 'w') as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + '\n')
-
-    # ---- pair manifest (content -> location only; see meta for rationale)
+    # ---- pair manifest (content -> location only; evidence-aware draft)
     pairs, n_pending = [], 0
+    left_types = {'OCR/semantic', 'count'}
     for row in rows:
         for cq in row['content_questions']:
             for lq in row['location_questions']:
                 same_source = (lq['source_question_id'] == cq['question_id'])
-                if same_source:
+                overlap, overlap_reason, ev_a, ev_b = compare_evidence(
+                    cq['question_id'], lq['source_question_id'], full)
+                type_crossing = cq['type_draft'] in left_types
+                pending = overlap == 'same' and type_crossing
+                if pending:
                     n_pending += 1
                     draft_label = ''
-                    rationale = ('same evidence element: content answer text IS the '
-                                 'location target; T2-vs-T4 precedence unresolved '
-                                 '(docs/M3-01 pending note) — excluded from default '
-                                 'T4 draft')
-                elif cq['type_draft'] in ('OCR/semantic', 'count'):
+                    rationale = ('same evidence block plus left->layout type crossing; '
+                                 'T2-vs-T4 precedence awaits user decision')
+                elif overlap == 'same':
+                    draft_label = 'T2'
+                    rationale = ('same evidence block without an automatically safe '
+                                 'type crossing')
+                elif overlap == 'partial':
+                    draft_label = 'uncertain'
+                    rationale = 'partial evidence overlap requires human adjudication'
+                elif type_crossing:
                     draft_label = 'T4'
-                    rationale = (f"cross-source {cq['type_draft']} -> layout "
-                                 f"(type crossing, frozen T4 rule)")
+                    rationale = (f"different evidence, {cq['type_draft']} -> layout "
+                                 'type crossing')
                 else:
                     draft_label = 'uncertain'
-                    rationale = ("content question's own type_draft is layout — "
-                                 "no clear type crossing; needs human review")
+                    rationale = (f"different evidence but {cq['type_draft']} -> layout "
+                                 'is not a safe cross-group T4 assignment')
                 pairs.append({
                     'dataset': 'ScreenQA', 'dataset_revision': ANNOTATIONS_REVISION,
                     'source_split': 'validation', 'split': 'pilot',
@@ -623,22 +991,79 @@ def main():
                     'qA_id': cq['question_id'], 'qA': cq['question'],
                     'qA_answers': ' | '.join(cq['answers']),
                     'qA_type_draft': cq['type_draft'],
+                    'qA_type_uncertain': cq['type_uncertain'],
+                    'qA_type_reason': cq['type_reason'],
+                    'qA_evidence_text_draft': ev_a['text'],
+                    'qA_evidence_bbox_draft': ev_a['bbox'],
+                    'qA_evidence_support': ev_a['support'],
+                    'qA_evidence_annotators': ev_a['annotators'],
                     'qB_id': lq['question_id'], 'qB': lq['question'],
                     'qB_answers': lq['answers'][0], 'qB_type_draft': 'layout',
                     'qB_template': lq['template'],
+                    'qB_source_question_id': lq['source_question_id'],
+                    'qB_evidence_text_draft': ev_b['text'],
+                    'qB_evidence_bbox_draft': ev_b['bbox'],
+                    'qB_evidence_support': ev_b['support'],
+                    'qB_evidence_annotators': ev_b['annotators'],
+                    'evidence_overlap_draft': overlap,
+                    'evidence_overlap_reason': overlap_reason,
                     'same_source': same_source,
-                    'pending_precedence_decision': same_source,
+                    'pending_precedence_decision': pending,
                     'draft_label': draft_label, 'draft_rationale': rationale,
                     'uncertain': True,
                     'label_A': '', 'notes_A': '', 'label_B': '', 'notes_B': '',
                     'adjudicated_label': '', 'adjudication_note': '',
                     'selection_seed': seed,
                 })
-    with open(f'{root}/experiments/manifests/t4_pairs_draft.jsonl', 'w') as f:
-        for p in pairs:
-            f.write(json.dumps(p, ensure_ascii=False) + '\n')
 
-    # ---- review workbook (review sheet + persisted sanity_check sheet)
+    final_half = Counter(r['answers'][0] for _, r in all_loc
+                         if r['template'] == 'half')
+    final_grid = Counter(r['answers'][0] for _, r in all_loc
+                         if r['template'] == 'grid3x3')
+    print(f'post-audit: {len(all_loc)}/{len(pre_audit_all_loc)} locations retained; '
+          f'verdicts={dict(visual_counts)}')
+    print('final half:', dict(final_half), ' final grid:', dict(final_grid))
+    print(f'final pairs: {len(pairs)} ({n_pending} pending precedence)')
+
+    source_meta_path = os.path.join(
+        root, 'experiments', 'manifests', 't4_pilot.meta.json')
+    if os.path.exists(source_meta_path):
+        with open(source_meta_path) as f:
+            old_meta = json.load(f)
+    else:
+        old_meta = None
+    selected_ids = {int(row['sample_id']) for row in rows}
+    final_selected = [e for e in selected if e['image_id'] in selected_ids]
+    missing_images, unverified_images = validate_existing_images(
+        final_selected, root, old_meta)
+    if not write_outputs:
+        if unverified_images:
+            raise RuntimeError(
+                'safe preview cannot authenticate existing images without recorded '
+                'hashes; use an explicit write mode to compare them with the pinned '
+                f'mirror: {unverified_images}')
+        if missing_images:
+            print(f'[safe preview] {len(missing_images)} selected images are absent; '
+                  'an explicit write run is required to fetch them')
+        print('[safe preview] validation complete; no files written')
+        return 0
+
+    os.makedirs(out_dir, exist_ok=True)
+    prov = ensure_images(final_selected, root, old_meta)
+    verify_images(final_selected, root)
+
+    pilot_out = os.path.join(out_dir, 't4_pilot.jsonl')
+    pairs_out = os.path.join(out_dir, 't4_pairs_draft.jsonl')
+    review_out = os.path.join(out_dir, 't4_review.xlsx')
+    meta_out = os.path.join(out_dir, 't4_pilot.meta.json')
+    with open(pilot_out, 'w') as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=False) + '\n')
+    with open(pairs_out, 'w') as f:
+        for pair in pairs:
+            f.write(json.dumps(pair, ensure_ascii=False) + '\n')
+
+    # ---- review workbook: final questions, arithmetic check, exhaustive visual audit
     import openpyxl
     from PIL import Image
     wb = openpyxl.Workbook()
@@ -655,193 +1080,186 @@ def main():
     ws2 = wb.create_sheet('sanity_check')
     ws2.append(['question_id', 'sample_id', 'template', 'claimed', 'recomputed',
                 'center_fx', 'center_fy', 'match', 'method'])
-    method = ('independent recompute: image W/H read from the actual image file '
-              '(PIL); center = median over annotator bbox centers from the raw '
-              'official annotation JSON; label from center fractions (no band '
-              f'filters); seed={seed + 2}')
-    srng = random.Random(seed + 2)
-    sample = srng.sample(sorted(all_loc, key=lambda t: t[1]['question_id']),
-                         min(10, len(all_loc)))
+    method = ('independent recompute: actual image W/H (PIL); median over raw '
+              'annotator bbox centers; fixed center-to-label rule; '
+              f'seed={seed + 2}')
+    sample = random.Random(seed + 2).sample(
+        sorted(all_loc, key=lambda t: t[1]['question_id']), min(10, len(all_loc)))
     n_match = 0
     for row, r in sample:
-        idx = int(r['source_question_id'].split('_')[-1])
-        gt = full[idx]['ground_truth']
-        cxs = sorted((g['ui_elements'][0]['bounds'][0] + g['ui_elements'][0]['bounds'][2]) / 2
-                     for g in gt)
-        cys = sorted((g['ui_elements'][0]['bounds'][1] + g['ui_elements'][0]['bounds'][3]) / 2
-                     for g in gt)
+        gt = full[_qid_index(r['source_question_id'])]['ground_truth']
+        cxs = [(g['ui_elements'][0]['bounds'][0] +
+                g['ui_elements'][0]['bounds'][2]) / 2 for g in gt]
+        cys = [(g['ui_elements'][0]['bounds'][1] +
+                g['ui_elements'][0]['bounds'][3]) / 2 for g in gt]
         with Image.open(os.path.join(root, row['image'])) as im:
             W, H = im.size
-        fx = statistics.median(cxs) / W
-        fy = statistics.median(cys) / H
+        fx, fy = statistics.median(cxs) / W, statistics.median(cys) / H
         if r['template'] == 'half':
             recomputed = 'top half' if fy < 0.5 else 'bottom half'
         else:
             def cell(f):
                 return 0 if f < 1 / 3 else (1 if f < 2 / 3 else 2)
             recomputed = GRID_NAMES[cell(fy)][cell(fx)]
-        match = (recomputed == r['answers'][0])
+        match = recomputed == r['answers'][0]
         n_match += match
         ws2.append([r['question_id'], row['sample_id'], r['template'],
                     r['answers'][0], recomputed, round(fx, 4), round(fy, 4),
                     'yes' if match else 'NO', method])
-    wb.save(f'{root}/experiments/manifests/t4_review.xlsx')
+
+    ws3 = wb.create_sheet('visual_audit')
+    visual_headers = ['question_id', 'sample_id', 'image', 'template',
+                      'claimed_answer', 'source_answer_text', 'source_bbox',
+                      'visual_verdict', 'verified_by', 'verified_date', 'note',
+                      'retained_after_audit']
+    ws3.append(visual_headers)
+    for rec in visual_records:
+        values = [json.dumps(rec[k], ensure_ascii=False)
+                  if isinstance(rec.get(k), (dict, list)) else rec.get(k, '')
+                  for k in visual_headers[:-1]]
+        ws3.append(values + [rec['question_id'] in final_loc_ids])
+    wb.save(review_out)
     print(f'sanity_check: {n_match}/{len(sample)} recomputed labels match')
 
-    # ---- meta
-    half_total = sum(ch.values())
-    grid_total = sum(cg.values())
+    # ---- final authoritative metadata; pre-audit figures live in a separate block
     meta = {
         'created': '2026-08-15',
         'version': 2,
-        'generator': 'vlm_diagnosis/scripts/gen_t4_pilot.py (v2, audit-corrected; '
-                     'v1 scratchpad script superseded)',
+        'generator': 'vlm_diagnosis/scripts/gen_t4_pilot.py',
         'selection_seed': seed,
         'source': {
-            'annotations': 'github.com/google-research-datasets/screen_qa '
-                           'answers_and_bboxes/validation.json + '
-                           'short_answers/validation.json (1:1 aligned, verified)',
-            'annotations_revision': f'{ANNOTATIONS_REVISION} (repo HEAD at v1 build; '
-                                    'local copy data/screenqa_probe/)',
+            'annotations': 'google-research-datasets/screen_qa validation full+short',
+            'annotations_revision': ANNOTATIONS_REVISION,
+            **source_hashes,
             'images': f'HF community mirror {IMAGES_REPO}, validation parquet shards',
             'images_revision': IMAGES_REVISION,
-            'residual_risk': 'Images come from a community mirror, not the official '
-                             'RICO release (see docs/screenqa-access-smoke.md §6). '
-                             'All selected images decode and match official '
-                             'annotation image_width/image_height. Duplicate-text '
-                             'detection can only see ANNOTATED evidence elements, '
-                             'not the whole screen — duplicates outside annotations '
-                             '(the v1 Facebook/Applesauce failures) are only caught '
-                             'by human review; the v1 offenders are hard-blacklisted.',
+            'residual_risk': 'community mirror rather than official RICO release; '
+                             'automatic duplicate checks see annotated evidence only, '
+                             'so exhaustive post-generation visual audit is mandatory',
         },
-        'question_id_convention': 'sqa_val_<idx> where idx = 0-based line index in '
-                                  'official validation.json; _loc1 = half template, '
-                                  '_loc2 = grid3x3 template',
-        'selection_rule': f'>=3 content questions with usable short answers AND >=1 '
-                          f'valid (half, grid3x3) location pair from two distinct '
-                          f'source questions; prefer 1080x1920; seeded shuffle, base '
-                          f'{N_BASE} screens, balance-driven expansion up to '
-                          f'{MAX_SCREENS} (stop when every grid class has >=2 items '
-                          f'and half split differs by <=1, or no remaining screen '
-                          f'can supply a needed class)',
+        'visual_audit': {
+            'input': (os.path.relpath(audit_path, root)
+                      if os.path.commonpath((root, audit_path)) == root else audit_path),
+            'sha256': visual_audit_sha,
+            'join_policy': 'exact question-id set and exact payload match; missing, '
+                           'unknown, duplicate, malformed, or unverified records fail',
+            'generated': len(visual_records),
+            'passed': visual_counts['pass'],
+            'failed': visual_counts['fail'],
+            'failed_location_ids': sorted(failed_loc_ids),
+            'policy': 'failed locations are removed post-generation and are never '
+                      'replaced without a new exhaustive audit',
+        },
+        'question_id_convention': 'sqa_val_<0-based validation index>; loc1=half, '
+                                  'loc2=grid3x3',
+        'selection_rule': f'>=3 usable content questions and a distinct-qid half/grid '
+                          f'candidate pair; 1080x1920 first; seeded base {N_BASE}; '
+                          f'greedy balance expansion capped at {MAX_SCREENS}',
         'location_generation_rules': {
-            'position_rule': 'ACTUAL implementation: position is judged from the '
-                             'median over annotator bbox CENTERS (median of '
-                             'per-annotator center-x, median of center-y). The '
-                             'recorded source_bbox is the element-wise median of '
-                             'annotator bboxes and is NOT used for position '
-                             'judgment.',
-            'half_template': 'top/bottom by median center-y vs H/2; EXCLUDE '
-                             'center-y in 40-60% of H (±10% midline band); EXCLUDE '
+            'position_rule': 'median over per-annotator bbox centers; source_bbox is '
+                             'the rounded element-wise median for display only',
+            'half_template': 'top/bottom; reject center-y in closed 40-60% band and '
                              'annotator half disagreement',
-            'grid3x3_template': 'cell by median center vs thirds; EXCLUDE center '
-                                'within ±5% of any cell boundary; EXCLUDE annotator '
-                                'cell disagreement',
-            'common_exclusions': 'answer with 0 or >1 ui_elements per annotator; '
-                                 'annotator text mismatch; normalized text <2 chars '
-                                 'or <2 alphanumeric chars (single-char and '
-                                 'punctuation-padded single-glyph answers); '
-                                 'UI-state answers '
-                                 '{on,off,yes,no,true,false}; star-rating answers '
-                                 "(regex '^\\d+([.,]\\d+)?\\s*(stars?|★+)$' — "
-                                 'rendered as widgets, not text); bare 1-2 digit '
-                                 'integers (pervasive-duplicate risk in counts/'
-                                 'scores/table cells); login-flow brand names '
-                                 '{facebook,google,twitter,instagram} (rendered in '
-                                 'both header and footer disclaimer of login '
-                                 'dialogs); source bbox wider '
-                                 'than 60% of screen width (full-row/field bboxes); '
-                                 'same normalized text at 2+ distinct on-screen '
-                                 'locations (center delta >2% of W or H, '
-                                 'unconditional — even same half); candidate text '
-                                 'occurring as a whole-word substring of a '
-                                 'different annotated element elsewhere on screen '
-                                 '(quoted text would match multiple visible '
-                                 'strings); status bar '
-                                 '(center-y < 3% of H); audit blacklist (below)',
-            'candidate_selection': 'seeded-random among balance-optimal candidates '
-                                   '(greedy fills underrepresented grid classes '
-                                   'first, then half; ties broken by seeded '
-                                   'rng.choice) — v1 first-valid bias removed',
+            'grid3x3_template': 'thirds; reject centers within closed +/-5% boundary '
+                                'bands and annotator cell disagreement',
+            'duplicate_scope': 'automatic exact/substring checks cover annotated '
+                               'evidence elements only; visual audit covers the screen',
+            'candidate_selection': 'locally greedy underrepresented-grid then half; '
+                                   'seeded random tie break',
         },
         'audit_exclusions': {
-            'date': '2026-08-15',
             'failed_v1_location_questions': AUDIT_FAILED_LOC_IDS,
             'blacklisted_source_questions': AUDIT_EXCLUSIONS,
-            'note': 'blacklist applies to the SOURCE question, so both templates '
-                    'from a flagged source are excluded (sqa_val_08120_loc2 was not '
-                    'itself flagged but its source is blacklisted)',
-            'v2_visual_check_exclusions': V2_VISUAL_EXCLUSIONS,
+            'v2_preselection_visual_exclusions': V2_VISUAL_EXCLUSIONS,
             'screen_exclusions': {str(k): v for k, v in SCREEN_EXCLUSIONS.items()},
-            'v2_visual_check_note': 'the v2 build itself was visually audited in '
-                                    'rounds: each build\'s 10-question seeded '
-                                    'sanity sample was rendered with bboxes drawn '
-                                    'on the images and inspected, and the build '
-                                    'was regenerated after each fix until a full '
-                                    'sample passed. Failures found and fixed: a '
-                                    'star-rating widget answer (systematic '
-                                    'rating-widget filter added), a timestamp '
-                                    'duplicated outside the annotated elements '
-                                    '(source question blacklisted), a candidate '
-                                    'text contained in another element\'s text '
-                                    '(systematic whole-word substring filter '
-                                    'added), an answer with a single legible '
-                                    'glyph (systematic >=2-alphanumeric filter '
-                                    'added), a bare 2-digit number duplicated in '
-                                    'a score table (systematic short-bare-integer '
-                                    'filter added), an answer with no visibly '
-                                    'rendered text at the bbox (blacklisted), and '
-                                    'further duplicate-outside-annotations cases '
-                                    '(blacklisted).',
+            'post_generation_failures': {
+                rec['question_id']: rec.get('note', '') for rec in visual_records
+                if rec['visual_verdict'] == 'fail'},
         },
         'pairs_manifest': {
-            'file': 'experiments/manifests/t4_pairs_draft.jsonl',
-            'direction': 'content_to_location ONLY. location->content is excluded '
-                         'because every generated location question embeds the '
-                         'source answer text verbatim — presenting it first leaks '
-                         'the content answer (answer leakage).',
-            'pending_precedence_decision': 'pairs where the location question\'s '
-                                           'source element IS the content '
-                                           'question\'s evidence (same source '
-                                           'question) are marked '
-                                           'pending_precedence_decision=true and '
-                                           'carry no draft label (T2-vs-T4 '
-                                           'precedence unresolved, docs/M3-01)',
-            'draft_rule': 'cross-source pairs: draft_label=T4 when content '
-                          'type_draft is OCR/semantic or count, else uncertain; '
-                          'ALL rows uncertain=true for human review',
+            'file': os.path.basename(pairs_out),
+            'direction': 'content_to_location only, fixed as the pilot causal order. '
+                         'Reverse direction directly leaks qA only for same/partial-'
+                         'evidence pairs; cross-evidence reverse pairs are omitted for '
+                         'directional consistency, not because all contain qA answers.',
+            'evidence_rule': 'same qid => same; otherwise canonical text plus IoU>=0.8 '
+                             'or smaller-box containment>=0.9 => same; annotator-only '
+                             'exact intersection => partial; otherwise different',
+            'pending_precedence_decision': 'only same-evidence plus left-group '
+                                           '(OCR/semantic/count)->layout crossings',
+            'type_policy': 'selection/status/tab cues are grounding+uncertain and '
+                           'cannot receive automatic T4; every pair remains uncertain '
+                           'until two-reviewer adjudication',
         },
         'statistical_plan': {
-            'unit_of_analysis': 'screen (each screen contributes 1 half + 1 grid '
-                                'question; questions within a screen are not '
-                                'independent)',
-            'resampling': 'screen-cluster bootstrap (resample screens with '
-                          'replacement, keep all questions of a resampled screen)',
-            'metrics': 'per-template balanced accuracy and macro-F1 (class '
-                       'imbalance is bounded but not zero; majority baselines '
-                       'recorded below)',
+            'unit_of_analysis': 'screen-macro; locations and content-location pairs '
+                                'within a screen are not independent',
+            'metric_definition': {
+                'raw_accuracy': 'mean of each screen\'s mean correctness; each screen '
+                                'has total weight 1 regardless of question count',
+                'balanced_accuracy': 'macro recall on a screen-weighted confusion '
+                                     'matrix; each question weight is 1 divided by '
+                                     'the number of evaluated questions on its screen',
+                'macro_f1': 'fixed-label macro-F1 on the same screen-weighted '
+                            'confusion matrix',
+                'per_template': 'also report half and grid3x3 separately; within each '
+                                'template each retained screen contributes at most '
+                                'one question',
+                'zero_support': 'fixed labels with zero gold or prediction support '
+                                'remain in the average with recall/F1=0 '
+                                '(zero_division=0)',
+            },
+            'bootstrap': {
+                'replicates': BOOTSTRAP_REPLICATES,
+                'seed': BOOTSTRAP_SEED,
+                'confidence_level': 0.95,
+                'interval': 'percentile [2.5%,97.5%]',
+                'resampling_unit': 'screen with replacement',
+                'labels': 'fixed post-audit label universe and gold labels in every '
+                          'replicate; no relabeling or class dropping',
+                'paired_delta': 'for method comparisons, reuse the identical sampled '
+                                'screen indices per replicate and report method-A '
+                                'minus method-B',
+            },
+            'metrics': ['raw_accuracy', 'balanced_accuracy', 'macro_f1'],
+        },
+        'pre_audit_generation_stats': {
+            'screens_selected': len(selected),
+            'location_questions': len(pre_audit_all_loc),
+            'half_distribution': {l: pre_half.get(l, 0) for l in HALF_LABELS},
+            'grid_distribution': {l: pre_grid.get(l, 0) for l in GRID_LABELS},
+            'expansion_beyond_base': expansion_log,
         },
         'stats': {
+            'authoritative_stage': 'post_visual_audit',
             'screens_scanned': len(screens),
             'screens_eligible': len(eligible),
-            'eligible_1080x1920': sum(1 for e in eligible
-                                      if (e['W'], e['H']) == (1080, 1920)),
-            'screens_selected': len(selected),
-            'expansion_beyond_base': expansion_log,
+            'eligible_1080x1920': sum(
+                1 for e in eligible if (e['W'], e['H']) == (1080, 1920)),
+            'screens_selected': len(rows),
+            'screen_location_count_distribution': dict(Counter(
+                len(row['location_questions']) for row in rows)),
             'content_questions': len(all_content),
             'location_questions': len(all_loc),
             'content_type_draft_distribution': dict(Counter(
                 r['type_draft'] for _, r in all_content)),
+            'content_type_uncertain': sum(
+                1 for _, r in all_content if r['type_uncertain']),
             'pairs_total': len(pairs),
             'pairs_pending_precedence': n_pending,
-            'pairs_draft_T4': sum(1 for p in pairs if p['draft_label'] == 'T4'),
-            'pairs_draft_uncertain': sum(1 for p in pairs
-                                         if p['draft_label'] == 'uncertain'),
+            'pair_draft_label_distribution': dict(Counter(
+                p['draft_label'] or 'pending' for p in pairs)),
+            'evidence_overlap_draft_distribution': dict(Counter(
+                p['evidence_overlap_draft'] for p in pairs)),
             'achieved_balance': {
-                'half': {'distribution': dict(ch),
-                         'majority_baseline': round(max(ch.values()) / half_total, 4)},
-                'grid3x3': {'distribution': {l: cg.get(l, 0) for l in GRID_LABELS},
-                            'majority_baseline': round(max(cg.values()) / grid_total, 4)},
+                'half': {
+                    'distribution': {l: final_half.get(l, 0) for l in HALF_LABELS},
+                    'majority_baseline': majority_baseline(final_half, HALF_LABELS),
+                },
+                'grid3x3': {
+                    'distribution': {l: final_grid.get(l, 0) for l in GRID_LABELS},
+                    'majority_baseline': majority_baseline(final_grid, GRID_LABELS),
+                },
             },
             'screen_exclusions': dict(screen_excl),
             'question_level_location_exclusions': dict(excl),
@@ -850,12 +1268,11 @@ def main():
         },
         'image_provenance': {k: prov[k] for k in sorted(prov, key=int)},
     }
-    with open(meta_path, 'w') as f:
+    with open(meta_out, 'w') as f:
         json.dump(meta, f, indent=1, ensure_ascii=False)
 
-    print(f'wrote {len(rows)} screens, {len(all_loc)} location questions, '
-          f'{len(all_content)} content questions, {len(pairs)} pairs '
-          f'({n_pending} pending precedence)')
+    print(f'wrote {len(rows)} screens, {len(all_loc)} audited location questions, '
+          f'{len(all_content)} content questions, {len(pairs)} pairs to {out_dir}')
     return 0
 
 

@@ -32,8 +32,8 @@ stage별로 `image`, `question_ids`, `pair_labels`, `episode_id`, `task_types`, 
 - `m5_trajectories.jsonl`
 - `m7_confirmation.jsonl`
 
-현재는 모두 미생성 상태다. 앞 단계 gate 순서대로 실제 manifest를 만든다. PLANNED 단계용 빈
-placeholder는 만들지 않는다.
+위 목록은 production manifest 계약이다. discovery 보조 산출물은 stage 이름을 명시한 별도
+파일로 둘 수 있으며, 현재 T4 ScreenQA 파일럿은 아래처럼 `pilot`/`draft` 상태로 관리한다.
 
 ## split·통계 규칙
 
@@ -58,3 +58,27 @@ python -m vlm_diagnosis.scripts.prep_docvqa \
 ```
 
 dataset revision 없이 실행하지 않는다.
+
+## ScreenQA T4 파일럿 v2
+
+최종 위치 질문은 `t4_pilot.jsonl`, 내용→위치 질문 쌍 초안은
+`t4_pairs_draft.jsonl`, 전수 시각 판정은 `t4_visual_audit.jsonl`에 둔다. 시각 감사 파일은
+생성기의 입력이며, 감사에서 실패한 문항은 교체하지 않고 post-generation 단계에서 제거한다.
+
+기본 실행은 입력·해시·감사 조인만 확인하고 파일을 쓰지 않는다.
+
+```bash
+python vlm_diagnosis/scripts/gen_t4_pilot.py --dry-run
+```
+
+검증된 산출물을 명시적으로 갱신할 때만 다음 순서로 실행한다.
+
+```bash
+python vlm_diagnosis/scripts/gen_t4_pilot.py --write-in-place
+python vlm_diagnosis/scripts/build_t4_pair_reviews.py
+python vlm_diagnosis/scripts/validate_t4_pilot.py
+```
+
+`t4_pairs_review_A.xlsx`와 `t4_pairs_review_B.xlsx`는 draft label과 상대 검수자 정보를 제외한
+독립·블라인드 검수 파일이다. T2↔T4 우선순위가 확정되기 전에는 same-evidence type-crossing
+쌍의 `final_label`을 비워 두고 `PRECEDENCE_PENDING`으로 표시한다.
