@@ -1,0 +1,195 @@
+{
+ "created": "2026-08-15",
+ "generator": "T4 pilot manifest build (agent, 2026-08-15); selection+generation script archived in session scratchpad",
+ "selection_seed": 42,
+ "source": {
+  "annotations": "github.com/google-research-datasets/screen_qa answers_and_bboxes/validation.json + short_answers/validation.json (1:1 aligned, verified)",
+  "annotations_revision": "1dfdbccaf56948821b5fa8ffe5d186fe4751e46d (repo HEAD at build time; local copy downloaded 2026-08-14, data/screenqa_probe/)",
+  "images": "HF community mirror bevaya/RICO-ScreenQA, validation parquet shards",
+  "images_revision": "44c8508ea528b4d4e035cc06e28d7baf8db09ec6",
+  "residual_risk": "Images come from a community mirror, not the official RICO release. Smoke report (docs/screenqa-access-smoke.md §6) recommends hash/visual comparison against RICO originals before confirmation-stage use. Pilot verification here: all 25 images decode, are RGB JPEG, and match the official annotation image_width/image_height (1080x1920); bbox-crop sanity check on 5 samples passed."
+ },
+ "question_id_convention": "sqa_val_<idx> where idx = 0-based line index in official validation.json (identical order in full and short variants); _loc1 = half template, _loc2 = grid3x3 template",
+ "selection_rule": ">=3 content questions with usable short answers (short-variant ground_truth excluding \"<no answer>\") AND a valid (half, grid3x3) location-question pair from two distinct source questions; prefer 1080x1920; shuffle(seed=42) of eligible screens, take 25",
+ "location_generation_rules": {
+  "answer_position_median": "bbox = element-wise median across annotators; position judged from median bbox center",
+  "half_template": "top/bottom by center_y vs H/2; EXCLUDE center_y in 40-60% of H (±10% midline band); EXCLUDE annotator half disagreement",
+  "grid3x3_template": "cell by center vs thirds; EXCLUDE center within ±5% of any cell boundary; EXCLUDE annotator cell disagreement",
+  "common_exclusions": "answer with 0 or >1 ui_elements per annotator; annotator text mismatch; normalized text <2 chars; same normalized text at 2+ distinct on-screen locations (center delta >5% of W or H); status bar (center_y < 3% of H)"
+ },
+ "stats": {
+  "screens_scanned": 3485,
+  "screens_eligible": 744,
+  "eligible_1080x1920": 569,
+  "screens_selected": 25,
+  "content_questions": 105,
+  "location_questions": 50,
+  "screen_exclusions": {
+   "lt3_content_questions": 2305,
+   "lt2_usable_bbox_questions": 436
+  },
+  "question_level_location_exclusions": {
+   "annotator_text_mismatch": 816,
+   "grid_boundary_band": 1060,
+   "half_midline_band": 658,
+   "no_valid_template": 146,
+   "duplicate_text_on_screen": 290,
+   "multi_element_answer": 383,
+   "text_too_short": 364,
+   "no_bbox": 347,
+   "status_bar": 3
+  }
+ },
+ "image_provenance": {
+  "1631": {
+   "file_name": "images/rico/1631.jpg",
+   "shard": "validation-00000-of-00003.parquet",
+   "row_group": 2,
+   "sha256": "ff1865d79299306f6ce03706377b2dd44c1547861df769f79c47cb15d5a323c8"
+  },
+  "6953": {
+   "file_name": "images/rico/6953.jpg",
+   "shard": "validation-00000-of-00003.parquet",
+   "row_group": 8,
+   "sha256": "09be54ec604433239d491ffbe35f17169e99ef867602e6c5b0f3541b4d0abf02"
+  },
+  "11623": {
+   "file_name": "images/rico/11623.jpg",
+   "shard": "validation-00000-of-00003.parquet",
+   "row_group": 13,
+   "sha256": "0f534c22d1d65a45fc979cb3d8f35a4213f9371cb36ab7b2fb51acd63722ef84"
+  },
+  "12779": {
+   "file_name": "images/rico/12779.jpg",
+   "shard": "validation-00000-of-00003.parquet",
+   "row_group": 14,
+   "sha256": "71037750031d74e47e599e5e86e42f32ccead8788c2846bb200f62d23fd464f0"
+  },
+  "15651": {
+   "file_name": "images/rico/15651.jpg",
+   "shard": "validation-00000-of-00003.parquet",
+   "row_group": 17,
+   "sha256": "bc714b2e559c9a57007aeee72d45c76784fb7fad610feb937c16542ee5482a1a"
+  },
+  "17128": {
+   "file_name": "images/rico/17128.jpg",
+   "shard": "validation-00000-of-00003.parquet",
+   "row_group": 19,
+   "sha256": "415821bce8535e9a91131eec9ac918d215b4039a66f479c4c9006b7382be072e"
+  },
+  "18474": {
+   "file_name": "images/rico/18474.jpg",
+   "shard": "validation-00000-of-00003.parquet",
+   "row_group": 21,
+   "sha256": "3c8461f2033ac8d1bd1607d5f6ff21bb590592f5f87e9c220d0e0e97452c10e6"
+  },
+  "20044": {
+   "file_name": "images/rico/20044.jpg",
+   "shard": "validation-00000-of-00003.parquet",
+   "row_group": 23,
+   "sha256": "aa8450a8de2b1cd4599841fbae61182e8e6275da4bb4a89434c3e3a2b1a5aa9b"
+  },
+  "23377": {
+   "file_name": "images/rico/23377.jpg",
+   "shard": "validation-00000-of-00003.parquet",
+   "row_group": 27,
+   "sha256": "8c222252d011e542dc8e246b5d323eec0acee4b5250656c9902f560535129664"
+  },
+  "26215": {
+   "file_name": "images/rico/26215.jpg",
+   "shard": "validation-00001-of-00003.parquet",
+   "row_group": 2,
+   "sha256": "073d87bb23696a9b6c5ac15b83a9e76a42a43ddee505e90e3091dc7eaba17b5e"
+  },
+  "28169": {
+   "file_name": "images/rico/28169.jpg",
+   "shard": "validation-00001-of-00003.parquet",
+   "row_group": 4,
+   "sha256": "dad5e974570aca19c9c019cc9808cfbfd1c1582f2cc378279b5e93eb0d35c701"
+  },
+  "28427": {
+   "file_name": "images/rico/28427.jpg",
+   "shard": "validation-00001-of-00003.parquet",
+   "row_group": 5,
+   "sha256": "b4bbcf35446d631cc331a44955a069fec932afd6ea4baf6f537937795a00b353"
+  },
+  "28532": {
+   "file_name": "images/rico/28532.jpg",
+   "shard": "validation-00001-of-00003.parquet",
+   "row_group": 5,
+   "sha256": "db13aab459acd2f4516eee02c6986fc93cb2827144d23572dff7a6c0b4cc2cda"
+  },
+  "33013": {
+   "file_name": "images/rico/33013.jpg",
+   "shard": "validation-00001-of-00003.parquet",
+   "row_group": 10,
+   "sha256": "3ee444634db87c583802de288aa121b3a5eec9d70a660098a580c8e846e980c3"
+  },
+  "33553": {
+   "file_name": "images/rico/33553.jpg",
+   "shard": "validation-00001-of-00003.parquet",
+   "row_group": 11,
+   "sha256": "6de88468bc45082df647a2f5f05da38e51d8fac637fadf53e8488af462fbb63f"
+  },
+  "35897": {
+   "file_name": "images/rico/35897.jpg",
+   "shard": "validation-00001-of-00003.parquet",
+   "row_group": 14,
+   "sha256": "379064e7b0734614a34aecaa0282b9691df9608090df29bd458cc13234210a03"
+  },
+  "36347": {
+   "file_name": "images/rico/36347.jpg",
+   "shard": "validation-00001-of-00003.parquet",
+   "row_group": 15,
+   "sha256": "f9043d68992374129bb798d18f695d16f8b834819408d40a77d6e6d443fff292"
+  },
+  "36656": {
+   "file_name": "images/rico/36656.jpg",
+   "shard": "validation-00001-of-00003.parquet",
+   "row_group": 15,
+   "sha256": "ad9a7b4bc0f501e394cc2eb4a4977f0601cb39a497f1ef766c51355137796098"
+  },
+  "39585": {
+   "file_name": "images/rico/39585.jpg",
+   "shard": "validation-00001-of-00003.parquet",
+   "row_group": 19,
+   "sha256": "6d434f674cb9a87fd2ceb23cb926ae5282d14dd40193c1ffcc7107f0c6febde0"
+  },
+  "43561": {
+   "file_name": "images/rico/43561.jpg",
+   "shard": "validation-00001-of-00003.parquet",
+   "row_group": 24,
+   "sha256": "e20177352a72988bc7ad2f1b5b672821d75c7e49581067e4833d561e49486e07"
+  },
+  "47155": {
+   "file_name": "images/rico/47155.jpg",
+   "shard": "validation-00002-of-00003.parquet",
+   "row_group": 0,
+   "sha256": "c49cdf3227f74a48ed280c7da4f69739da4e2eaece190c4d0bd5db029a27d5a3"
+  },
+  "53271": {
+   "file_name": "images/rico/53271.jpg",
+   "shard": "validation-00002-of-00003.parquet",
+   "row_group": 6,
+   "sha256": "d3c39b248931843d3076422666a7a678d613a43f116efcaf80a0a9c212ba6caf"
+  },
+  "55971": {
+   "file_name": "images/rico/55971.jpg",
+   "shard": "validation-00002-of-00003.parquet",
+   "row_group": 9,
+   "sha256": "a1405a24a62ca40c88c81c258a715a61f655e45b6c15eb9cb13a92fbc8f5336c"
+  },
+  "68154": {
+   "file_name": "images/rico/68154.jpg",
+   "shard": "validation-00002-of-00003.parquet",
+   "row_group": 23,
+   "sha256": "01d01475ce19f32a9f356fbc568c0c8fc6bc0a08edc28532a5f2535641257c12"
+  },
+  "69940": {
+   "file_name": "images/rico/69940.jpg",
+   "shard": "validation-00002-of-00003.parquet",
+   "row_group": 25,
+   "sha256": "bee35317d1257058d20606283b3e852cffb842686d9e834168f003b743c9343d"
+  }
+ }
+}
