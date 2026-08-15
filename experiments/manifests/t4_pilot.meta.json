@@ -1,195 +1,355 @@
 {
  "created": "2026-08-15",
- "generator": "T4 pilot manifest build (agent, 2026-08-15); selection+generation script archived in session scratchpad",
+ "version": 2,
+ "generator": "vlm_diagnosis/scripts/gen_t4_pilot.py (v2, audit-corrected; v1 scratchpad script superseded)",
  "selection_seed": 42,
  "source": {
   "annotations": "github.com/google-research-datasets/screen_qa answers_and_bboxes/validation.json + short_answers/validation.json (1:1 aligned, verified)",
-  "annotations_revision": "1dfdbccaf56948821b5fa8ffe5d186fe4751e46d (repo HEAD at build time; local copy downloaded 2026-08-14, data/screenqa_probe/)",
+  "annotations_revision": "1dfdbccaf56948821b5fa8ffe5d186fe4751e46d (repo HEAD at v1 build; local copy data/screenqa_probe/)",
   "images": "HF community mirror bevaya/RICO-ScreenQA, validation parquet shards",
   "images_revision": "44c8508ea528b4d4e035cc06e28d7baf8db09ec6",
-  "residual_risk": "Images come from a community mirror, not the official RICO release. Smoke report (docs/screenqa-access-smoke.md §6) recommends hash/visual comparison against RICO originals before confirmation-stage use. Pilot verification here: all 25 images decode, are RGB JPEG, and match the official annotation image_width/image_height (1080x1920); bbox-crop sanity check on 5 samples passed."
+  "residual_risk": "Images come from a community mirror, not the official RICO release (see docs/screenqa-access-smoke.md §6). All selected images decode and match official annotation image_width/image_height. Duplicate-text detection can only see ANNOTATED evidence elements, not the whole screen — duplicates outside annotations (the v1 Facebook/Applesauce failures) are only caught by human review; the v1 offenders are hard-blacklisted."
  },
- "question_id_convention": "sqa_val_<idx> where idx = 0-based line index in official validation.json (identical order in full and short variants); _loc1 = half template, _loc2 = grid3x3 template",
- "selection_rule": ">=3 content questions with usable short answers (short-variant ground_truth excluding \"<no answer>\") AND a valid (half, grid3x3) location-question pair from two distinct source questions; prefer 1080x1920; shuffle(seed=42) of eligible screens, take 25",
+ "question_id_convention": "sqa_val_<idx> where idx = 0-based line index in official validation.json; _loc1 = half template, _loc2 = grid3x3 template",
+ "selection_rule": ">=3 content questions with usable short answers AND >=1 valid (half, grid3x3) location pair from two distinct source questions; prefer 1080x1920; seeded shuffle, base 25 screens, balance-driven expansion up to 35 (stop when every grid class has >=2 items and half split differs by <=1, or no remaining screen can supply a needed class)",
  "location_generation_rules": {
-  "answer_position_median": "bbox = element-wise median across annotators; position judged from median bbox center",
-  "half_template": "top/bottom by center_y vs H/2; EXCLUDE center_y in 40-60% of H (±10% midline band); EXCLUDE annotator half disagreement",
-  "grid3x3_template": "cell by center vs thirds; EXCLUDE center within ±5% of any cell boundary; EXCLUDE annotator cell disagreement",
-  "common_exclusions": "answer with 0 or >1 ui_elements per annotator; annotator text mismatch; normalized text <2 chars; same normalized text at 2+ distinct on-screen locations (center delta >5% of W or H); status bar (center_y < 3% of H)"
+  "position_rule": "ACTUAL implementation: position is judged from the median over annotator bbox CENTERS (median of per-annotator center-x, median of center-y). The recorded source_bbox is the element-wise median of annotator bboxes and is NOT used for position judgment.",
+  "half_template": "top/bottom by median center-y vs H/2; EXCLUDE center-y in 40-60% of H (±10% midline band); EXCLUDE annotator half disagreement",
+  "grid3x3_template": "cell by median center vs thirds; EXCLUDE center within ±5% of any cell boundary; EXCLUDE annotator cell disagreement",
+  "common_exclusions": "answer with 0 or >1 ui_elements per annotator; annotator text mismatch; normalized text <2 chars or <2 alphanumeric chars (single-char and punctuation-padded single-glyph answers); UI-state answers {on,off,yes,no,true,false}; star-rating answers (regex '^\\d+([.,]\\d+)?\\s*(stars?|★+)$' — rendered as widgets, not text); bare 1-2 digit integers (pervasive-duplicate risk in counts/scores/table cells); login-flow brand names {facebook,google,twitter,instagram} (rendered in both header and footer disclaimer of login dialogs); source bbox wider than 60% of screen width (full-row/field bboxes); same normalized text at 2+ distinct on-screen locations (center delta >2% of W or H, unconditional — even same half); candidate text occurring as a whole-word substring of a different annotated element elsewhere on screen (quoted text would match multiple visible strings); status bar (center-y < 3% of H); audit blacklist (below)",
+  "candidate_selection": "seeded-random among balance-optimal candidates (greedy fills underrepresented grid classes first, then half; ties broken by seeded rng.choice) — v1 first-valid bias removed"
+ },
+ "audit_exclusions": {
+  "date": "2026-08-15",
+  "failed_v1_location_questions": [
+   "sqa_val_01472_loc1",
+   "sqa_val_02356_loc2",
+   "sqa_val_03384_loc2",
+   "sqa_val_04404_loc1",
+   "sqa_val_05301_loc2",
+   "sqa_val_05761_loc1",
+   "sqa_val_06679_loc2",
+   "sqa_val_08120_loc1"
+  ],
+  "blacklisted_source_questions": {
+   "sqa_val_06679": "v1 _loc2 '09:00': full-row bbox spanning the screen -> wrong grid cell",
+   "sqa_val_01472": "v1 _loc1 '18': spinner/full-element bbox, not the text extent",
+   "sqa_val_05301": "v1 _loc2 '18': spinner/full-element bbox, not the text extent",
+   "sqa_val_02356": "v1 _loc2 'Brush': element is an icon; text not visibly rendered",
+   "sqa_val_03384": "v1 _loc2 'on': UI toggle state, not visible text; multiple toggles on",
+   "sqa_val_05761": "v1 _loc1 'on': UI toggle state, not visible text; multiple toggles on",
+   "sqa_val_04404": "v1 _loc1 'Facebook': text appears at top AND bottom of screen (duplicate outside annotated elements)",
+   "sqa_val_08120": "v1 _loc1 'Applesauce': text duplicated on screen (duplicate outside annotated elements)"
+  },
+  "note": "blacklist applies to the SOURCE question, so both templates from a flagged source are excluded (sqa_val_08120_loc2 was not itself flagged but its source is blacklisted)",
+  "v2_visual_check_exclusions": {
+   "sqa_val_05364": "v2 candidate 'Sat, 11 Feb': same timestamp text rendered on two news items (nytimes + washingtonpost rows); duplicate outside annotated elements -> ambiguous location",
+   "sqa_val_03018": "v2 candidate 'SAM App': text repeats in the headline 'SAM App for Anxiety - Free Download' (duplicate outside annotated elements; unconditional duplicate rule applies even though both occurrences are in the top half)",
+   "sqa_val_06821": "v2 candidate '1975': bbox sits on a wallpaper region with no visibly rendered text (annotated answer not legible on screen)",
+   "sqa_val_06233": "v2 candidate 'Facebook': header 'Log in With Facebook' (top) AND footer 'This doesn't let the app post to Facebook.' (bottom) — duplicate outside annotated elements, half answer ambiguous",
+   "sqa_val_06328": "v2 candidate 'Weather': word rendered many times on the iTunes preview page (screen title, app names, category) — duplicates outside annotated elements",
+   "sqa_val_03457": "v2 candidate 'Greg Laurie': text is both the app-bar title (top) and the player artist line (bottom) — duplicate outside annotated elements, half answer ambiguous",
+   "sqa_val_07727": "v2 candidate '1 mg': bbox sits on an empty region of the medication list — dose text not visibly rendered",
+   "sqa_val_02540": "v2 candidate 'Return': 'Return date' field label elsewhere on screen repeats the word (duplicate outside annotated elements, grid answer ambiguous)",
+   "sqa_val_05020": "v2 candidate 'Grace Chan': profile name (middle-left) AND post author line (bottom-left) — duplicate outside annotated elements, grid answer ambiguous",
+   "sqa_val_01041": "v2 candidate 'LISTEN': tab (top) AND 'Listen Later' item (bottom) — whole-word duplicate outside annotated elements",
+   "sqa_val_01410": "v2 candidate '30 °F': main temperature AND 'Low: 30 °F' line — duplicate outside annotated elements",
+   "sqa_val_04347": "v2 candidate '$0.00': invoice shows Total $0.00 AND Balance Due $0.00 — duplicate (same cell, but unconditional rule)",
+   "sqa_val_04720": "v2 candidate '13:00': '20 May at 13:00' AND 'Yesterday at 13:00' — duplicate outside annotated elements",
+   "sqa_val_04778": "v2 candidate 'Today': tab (top) AND ad text 'Talk to your doctor today' (bottom) — whole-word duplicate",
+   "sqa_val_05441": "v2 candidate '$6.00': '$6.00 Value' rendered on three deal cards — duplicates outside annotated elements",
+   "sqa_val_06957": "v2 candidate 'Restaurant.com': title bar, install banner (twice) and 'Specials by Restaurant.com' — duplicates in both halves",
+   "sqa_val_07958": "v2 candidate '2 hours ago': CNN item AND New York Times item — duplicate outside annotated elements, grid ambiguous",
+   "sqa_val_06467": "v2 candidate 'settings': target is the gear ICON in the toolbar — annotated text not visibly rendered",
+   "sqa_val_07953": "v2 candidate 'New York Times': byline on two news items (top-left and middle) — duplicate outside annotated elements",
+   "sqa_val_08138": "v2 candidate 'Wed, Feb 15': date rendered on four article cards in both halves — duplicates outside annotated elements",
+   "sqa_val_08438": "v2 candidate 'OsmAnd (online tiles)': row title AND 'Tile data:' subtitle repeat the exact text — duplicate outside annotated elements"
+  },
+  "screen_exclusions": {
+   "54145": "mirror image is landscape 1920x1080 but the official annotation says 1080x1920 — dimension mismatch would corrupt position labels"
+  },
+  "v2_visual_check_note": "the v2 build itself was visually audited in rounds: each build's 10-question seeded sanity sample was rendered with bboxes drawn on the images and inspected, and the build was regenerated after each fix until a full sample passed. Failures found and fixed: a star-rating widget answer (systematic rating-widget filter added), a timestamp duplicated outside the annotated elements (source question blacklisted), a candidate text contained in another element's text (systematic whole-word substring filter added), an answer with a single legible glyph (systematic >=2-alphanumeric filter added), a bare 2-digit number duplicated in a score table (systematic short-bare-integer filter added), an answer with no visibly rendered text at the bbox (blacklisted), and further duplicate-outside-annotations cases (blacklisted)."
+ },
+ "pairs_manifest": {
+  "file": "experiments/manifests/t4_pairs_draft.jsonl",
+  "direction": "content_to_location ONLY. location->content is excluded because every generated location question embeds the source answer text verbatim — presenting it first leaks the content answer (answer leakage).",
+  "pending_precedence_decision": "pairs where the location question's source element IS the content question's evidence (same source question) are marked pending_precedence_decision=true and carry no draft label (T2-vs-T4 precedence unresolved, docs/M3-01)",
+  "draft_rule": "cross-source pairs: draft_label=T4 when content type_draft is OCR/semantic or count, else uncertain; ALL rows uncertain=true for human review"
+ },
+ "statistical_plan": {
+  "unit_of_analysis": "screen (each screen contributes 1 half + 1 grid question; questions within a screen are not independent)",
+  "resampling": "screen-cluster bootstrap (resample screens with replacement, keep all questions of a resampled screen)",
+  "metrics": "per-template balanced accuracy and macro-F1 (class imbalance is bounded but not zero; majority baselines recorded below)"
  },
  "stats": {
   "screens_scanned": 3485,
-  "screens_eligible": 744,
-  "eligible_1080x1920": 569,
-  "screens_selected": 25,
-  "content_questions": 105,
-  "location_questions": 50,
+  "screens_eligible": 488,
+  "eligible_1080x1920": 375,
+  "screens_selected": 26,
+  "expansion_beyond_base": [
+   {
+    "added_image_id": 43764,
+    "reason": "grid:bottom-center count=1"
+   }
+  ],
+  "content_questions": 114,
+  "location_questions": 52,
+  "content_type_draft_distribution": {
+   "OCR/semantic": 106,
+   "count": 8
+  },
+  "pairs_total": 228,
+  "pairs_pending_precedence": 52,
+  "pairs_draft_T4": 176,
+  "pairs_draft_uncertain": 0,
+  "achieved_balance": {
+   "half": {
+    "distribution": {
+     "bottom half": 13,
+     "top half": 13
+    },
+    "majority_baseline": 0.5
+   },
+   "grid3x3": {
+    "distribution": {
+     "top-left": 3,
+     "top-center": 4,
+     "top-right": 3,
+     "middle-left": 4,
+     "center": 2,
+     "middle-right": 4,
+     "bottom-left": 2,
+     "bottom-center": 2,
+     "bottom-right": 2
+    },
+    "majority_baseline": 0.1538
+   }
+  },
   "screen_exclusions": {
    "lt3_content_questions": 2305,
-   "lt2_usable_bbox_questions": 436
+   "no_valid_half_grid_pair": 691,
+   "screen_blacklist": 1
   },
   "question_level_location_exclusions": {
    "annotator_text_mismatch": 816,
-   "grid_boundary_band": 1060,
-   "half_midline_band": 658,
-   "no_valid_template": 146,
-   "duplicate_text_on_screen": 290,
+   "grid_boundary_band": 776,
+   "half_midline_band": 471,
+   "no_valid_template": 128,
+   "duplicate_text_on_screen": 139,
    "multi_element_answer": 383,
-   "text_too_short": 364,
+   "short_bare_integer": 166,
+   "text_too_short_or_single_char": 394,
    "no_bbox": 347,
-   "status_bar": 3
-  }
+   "wide_bbox": 339,
+   "substring_of_other_text": 51,
+   "ui_state_answer": 223,
+   "status_bar": 3,
+   "login_brand_answer": 38,
+   "audit_blacklist": 29,
+   "rating_widget_answer": 22
+  },
+  "sanity_check": {
+   "sampled": 10,
+   "matched": 10,
+   "sheet": "t4_review.xlsx#sanity_check"
+  },
+  "final_location_questions": 51,
+  "half_distribution": {
+   "bottom half": 12,
+   "top half": 13
+  },
+  "grid_distribution": {
+   "middle-right": 4,
+   "middle-left": 4,
+   "bottom-left": 2,
+   "top-center": 4,
+   "top-left": 3,
+   "top-right": 3,
+   "bottom-center": 2,
+   "bottom-right": 2,
+   "center": 2
+  },
+  "majority_baseline_half": 0.52,
+  "majority_baseline_grid": 0.154
  },
  "image_provenance": {
-  "1631": {
-   "file_name": "images/rico/1631.jpg",
+  "13920": {
+   "file_name": "images/rico/13920.jpg",
+   "sha256": "350990506dadcd83150948d1fa5eedf1aef5cedfd6a3e9c2d363a3749de7ef06",
    "shard": "validation-00000-of-00003.parquet",
-   "row_group": 2,
-   "sha256": "ff1865d79299306f6ce03706377b2dd44c1547861df769f79c47cb15d5a323c8"
+   "row_group": 15
   },
-  "6953": {
-   "file_name": "images/rico/6953.jpg",
+  "15084": {
+   "file_name": "images/rico/15084.jpg",
+   "sha256": "92ea233067bd09581176a2e5ce87c06e54db60ac8a9e3c9d348d846aaf0337be",
    "shard": "validation-00000-of-00003.parquet",
-   "row_group": 8,
-   "sha256": "09be54ec604433239d491ffbe35f17169e99ef867602e6c5b0f3541b4d0abf02"
+   "row_group": 17
   },
-  "11623": {
-   "file_name": "images/rico/11623.jpg",
+  "16339": {
+   "file_name": "images/rico/16339.jpg",
    "shard": "validation-00000-of-00003.parquet",
-   "row_group": 13,
-   "sha256": "0f534c22d1d65a45fc979cb3d8f35a4213f9371cb36ab7b2fb51acd63722ef84"
+   "row_group": 18,
+   "sha256": "f390afc34c78580645f377364ef8b1b875fc65916e96bf8426c7d08c7cf62699"
   },
-  "12779": {
-   "file_name": "images/rico/12779.jpg",
+  "16692": {
+   "file_name": "images/rico/16692.jpg",
+   "sha256": "49c17d6d74f5d503db8f1b591a71416b393f4b529772e031b0eec4cf3410ee73",
    "shard": "validation-00000-of-00003.parquet",
-   "row_group": 14,
-   "sha256": "71037750031d74e47e599e5e86e42f32ccead8788c2846bb200f62d23fd464f0"
+   "row_group": 19
   },
-  "15651": {
-   "file_name": "images/rico/15651.jpg",
+  "19288": {
+   "file_name": "images/rico/19288.jpg",
    "shard": "validation-00000-of-00003.parquet",
-   "row_group": 17,
-   "sha256": "bc714b2e559c9a57007aeee72d45c76784fb7fad610feb937c16542ee5482a1a"
+   "row_group": 22,
+   "sha256": "4e8351f0b532fe1fb6b197fa66c45aad03898eaf9942b236026a33cdc982f4ed"
   },
-  "17128": {
-   "file_name": "images/rico/17128.jpg",
-   "shard": "validation-00000-of-00003.parquet",
-   "row_group": 19,
-   "sha256": "415821bce8535e9a91131eec9ac918d215b4039a66f479c4c9006b7382be072e"
-  },
-  "18474": {
-   "file_name": "images/rico/18474.jpg",
-   "shard": "validation-00000-of-00003.parquet",
-   "row_group": 21,
-   "sha256": "3c8461f2033ac8d1bd1607d5f6ff21bb590592f5f87e9c220d0e0e97452c10e6"
-  },
-  "20044": {
-   "file_name": "images/rico/20044.jpg",
+  "19964": {
+   "file_name": "images/rico/19964.jpg",
    "shard": "validation-00000-of-00003.parquet",
    "row_group": 23,
-   "sha256": "aa8450a8de2b1cd4599841fbae61182e8e6275da4bb4a89434c3e3a2b1a5aa9b"
+   "sha256": "92985f7a0e8aae23c0048f940f5559641f1df113265388b83046ad0963244765"
   },
-  "23377": {
-   "file_name": "images/rico/23377.jpg",
+  "21045": {
+   "file_name": "images/rico/21045.jpg",
    "shard": "validation-00000-of-00003.parquet",
-   "row_group": 27,
-   "sha256": "8c222252d011e542dc8e246b5d323eec0acee4b5250656c9902f560535129664"
+   "row_group": 24,
+   "sha256": "25a00d6740b1f8ad9a108366e19e8f12c8779c626313e2cb6705ee5de90fe4f3"
   },
-  "26215": {
-   "file_name": "images/rico/26215.jpg",
+  "24053": {
+   "file_name": "images/rico/24053.jpg",
+   "shard": "validation-00000-of-00003.parquet",
+   "row_group": 28,
+   "sha256": "b79f2b3fe8e0b7bc3c95f6cc05d9394627524830a7a2704a14d278e4360930b2"
+  },
+  "26974": {
+   "file_name": "images/rico/26974.jpg",
+   "sha256": "0f2b05d393f66cca239d4e65133b6d3f0931db019ed70435ef3b03be89e8e74f",
    "shard": "validation-00001-of-00003.parquet",
-   "row_group": 2,
-   "sha256": "073d87bb23696a9b6c5ac15b83a9e76a42a43ddee505e90e3091dc7eaba17b5e"
+   "row_group": 3
   },
-  "28169": {
-   "file_name": "images/rico/28169.jpg",
+  "33486": {
+   "file_name": "images/rico/33486.jpg",
+   "sha256": "c0c6aa5a3e602cc4ef82164857e1f90fff09abc18a1d312dca3e073a082d601c",
    "shard": "validation-00001-of-00003.parquet",
-   "row_group": 4,
-   "sha256": "dad5e974570aca19c9c019cc9808cfbfd1c1582f2cc378279b5e93eb0d35c701"
+   "row_group": 11
   },
-  "28427": {
-   "file_name": "images/rico/28427.jpg",
+  "34480": {
+   "file_name": "images/rico/34480.jpg",
+   "sha256": "ddbe85cf67fca5e4e64c8f3e7f13dddb21f5b86894f12522e6cfb1e8016f59ac",
    "shard": "validation-00001-of-00003.parquet",
-   "row_group": 5,
-   "sha256": "b4bbcf35446d631cc331a44955a069fec932afd6ea4baf6f537937795a00b353"
+   "row_group": 12
   },
-  "28532": {
-   "file_name": "images/rico/28532.jpg",
+  "36076": {
+   "file_name": "images/rico/36076.jpg",
+   "sha256": "a72f37b569c89f4256f676634a92c3de5a855b1c1a8d47408d45806e8977e66b",
    "shard": "validation-00001-of-00003.parquet",
-   "row_group": 5,
-   "sha256": "db13aab459acd2f4516eee02c6986fc93cb2827144d23572dff7a6c0b4cc2cda"
+   "row_group": 15
   },
-  "33013": {
-   "file_name": "images/rico/33013.jpg",
+  "38973": {
+   "file_name": "images/rico/38973.jpg",
+   "sha256": "69ff80c2adcf4986674a1c1272ab7ec85b1e4796061a281b36c914416f1b00ec",
    "shard": "validation-00001-of-00003.parquet",
-   "row_group": 10,
-   "sha256": "3ee444634db87c583802de288aa121b3a5eec9d70a660098a580c8e846e980c3"
+   "row_group": 18
   },
-  "33553": {
-   "file_name": "images/rico/33553.jpg",
-   "shard": "validation-00001-of-00003.parquet",
-   "row_group": 11,
-   "sha256": "6de88468bc45082df647a2f5f05da38e51d8fac637fadf53e8488af462fbb63f"
-  },
-  "35897": {
-   "file_name": "images/rico/35897.jpg",
-   "shard": "validation-00001-of-00003.parquet",
-   "row_group": 14,
-   "sha256": "379064e7b0734614a34aecaa0282b9691df9608090df29bd458cc13234210a03"
-  },
-  "36347": {
-   "file_name": "images/rico/36347.jpg",
-   "shard": "validation-00001-of-00003.parquet",
-   "row_group": 15,
-   "sha256": "f9043d68992374129bb798d18f695d16f8b834819408d40a77d6e6d443fff292"
-  },
-  "36656": {
-   "file_name": "images/rico/36656.jpg",
-   "shard": "validation-00001-of-00003.parquet",
-   "row_group": 15,
-   "sha256": "ad9a7b4bc0f501e394cc2eb4a4977f0601cb39a497f1ef766c51355137796098"
-  },
-  "39585": {
-   "file_name": "images/rico/39585.jpg",
-   "shard": "validation-00001-of-00003.parquet",
-   "row_group": 19,
-   "sha256": "6d434f674cb9a87fd2ceb23cb926ae5282d14dd40193c1ffcc7107f0c6febde0"
-  },
-  "43561": {
-   "file_name": "images/rico/43561.jpg",
+  "43764": {
+   "file_name": "images/rico/43764.jpg",
    "shard": "validation-00001-of-00003.parquet",
    "row_group": 24,
-   "sha256": "e20177352a72988bc7ad2f1b5b672821d75c7e49581067e4833d561e49486e07"
+   "sha256": "4a8f885f8e1cc20b6469a19de8786befdab0571606a3b4c01cf057b853618ed5"
   },
-  "47155": {
-   "file_name": "images/rico/47155.jpg",
+  "53913": {
+   "file_name": "images/rico/53913.jpg",
    "shard": "validation-00002-of-00003.parquet",
-   "row_group": 0,
-   "sha256": "c49cdf3227f74a48ed280c7da4f69739da4e2eaece190c4d0bd5db029a27d5a3"
+   "row_group": 7,
+   "sha256": "086e13e630f68659361c9d1a4286c04557ede228ecc27891cd69247d96616fde"
   },
-  "53271": {
-   "file_name": "images/rico/53271.jpg",
+  "54179": {
+   "file_name": "images/rico/54179.jpg",
    "shard": "validation-00002-of-00003.parquet",
-   "row_group": 6,
-   "sha256": "d3c39b248931843d3076422666a7a678d613a43f116efcaf80a0a9c212ba6caf"
+   "row_group": 7,
+   "sha256": "4b2c000e279c5b3d123fa35973ce93f6d84641264c9d3988e08ece8d2246413d"
   },
-  "55971": {
-   "file_name": "images/rico/55971.jpg",
+  "56219": {
+   "file_name": "images/rico/56219.jpg",
+   "sha256": "d0fde646fb7515c821b62a619f17df91e881cdd0c95c6ecc14cd6f6c572f6247",
    "shard": "validation-00002-of-00003.parquet",
-   "row_group": 9,
-   "sha256": "a1405a24a62ca40c88c81c258a715a61f655e45b6c15eb9cb13a92fbc8f5336c"
+   "row_group": 9
   },
-  "68154": {
-   "file_name": "images/rico/68154.jpg",
+  "60478": {
+   "file_name": "images/rico/60478.jpg",
+   "shard": "validation-00002-of-00003.parquet",
+   "row_group": 15,
+   "sha256": "3304bc6e1b44ce9068e4e4fffe18e8ed2ddf98d669d1f12e7c2443fca20f3d40"
+  },
+  "61882": {
+   "file_name": "images/rico/61882.jpg",
+   "shard": "validation-00002-of-00003.parquet",
+   "row_group": 16,
+   "sha256": "e32950b825d29178a44a834ae3e4281be43b8c25db1ec0c67a1df416a38a95fc"
+  },
+  "64175": {
+   "file_name": "images/rico/64175.jpg",
+   "shard": "validation-00002-of-00003.parquet",
+   "row_group": 18,
+   "sha256": "4ff3f89c9d31fdb0e3c691b13a30f774f81ae8d05c4242c41821a5291dd9fef8"
+  },
+  "64798": {
+   "file_name": "images/rico/64798.jpg",
+   "sha256": "d512fb67786d5b0a6798ce679bd2f7b655c682e9566ed32af6e91d0855f507cb",
+   "shard": "validation-00002-of-00003.parquet",
+   "row_group": 19
+  },
+  "66964": {
+   "file_name": "images/rico/66964.jpg",
+   "shard": "validation-00002-of-00003.parquet",
+   "row_group": 21,
+   "sha256": "18d877c54e6ad4f5ea2e5d37ce5c4162eecca41eaf3a5e2a44d438308aeefdf8"
+  },
+  "67051": {
+   "file_name": "images/rico/67051.jpg",
+   "shard": "validation-00002-of-00003.parquet",
+   "row_group": 22,
+   "sha256": "da348545125658b3f6023a808a6e87c4a3f4c4e3574aa3bb776404e13de3bc08"
+  },
+  "68259": {
+   "file_name": "images/rico/68259.jpg",
    "shard": "validation-00002-of-00003.parquet",
    "row_group": 23,
-   "sha256": "01d01475ce19f32a9f356fbc568c0c8fc6bc0a08edc28532a5f2535641257c12"
+   "sha256": "74d845222c8f35c273f5d7cccbaa3bcb1e9be0bb9095b5ddbee83377996055b2"
   },
-  "69940": {
-   "file_name": "images/rico/69940.jpg",
+  "69257": {
+   "file_name": "images/rico/69257.jpg",
+   "sha256": "14b4ced07c674259005f37fab905158edcfb9f238e1204ddd94e23d41e9376b0",
    "shard": "validation-00002-of-00003.parquet",
-   "row_group": 25,
-   "sha256": "bee35317d1257058d20606283b3e852cffb842686d9e834168f003b743c9343d"
+   "row_group": 24
+  },
+  "70775": {
+   "file_name": "images/rico/70775.jpg",
+   "sha256": "6e3227420e99f9ca56a139bd625e6b321fcd1b129bc6789d82af3768ed7de00c",
+   "shard": "validation-00002-of-00003.parquet",
+   "row_group": 26
   }
+ },
+ "visual_audit": {
+  "date": "2026-08-15",
+  "policy": "모든 위치 질문을 이미지로 직접 검증 (bbox 산술만으로는 아이콘·전체행 bbox·중복 텍스트를 못 잡음)",
+  "records": "experiments/manifests/t4_visual_audit.jsonl",
+  "verified_total": 52,
+  "passed": 51,
+  "failed": 1,
+  "by_verifier": {
+   "agent": 26,
+   "agent+opus_spotcheck": 5,
+   "opus_direct": 21
+  },
+  "post_generation_visual_exclusions": {
+   "sqa_val_03982_loc1": "'Announce'가 화면에 4회 반복되고 상·하반부에 모두 존재 → 답 모호 (annotation 밖 중복이라 자동 필터가 놓침)"
+  },
+  "spotcheck": "에이전트 검증분 31개 중 무작위 5개를 Opus가 이미지로 재확인 → 5/5 일치",
+  "borderline_flags": [
+   "sqa_val_04725_loc2",
+   "sqa_val_07265_loc2",
+   "sqa_val_07956_loc2"
+  ]
  }
 }
