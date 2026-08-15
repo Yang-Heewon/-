@@ -47,6 +47,8 @@ def main():
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--max-new-tokens", type=int, default=32)
     ap.add_argument("--out", default="results/smoke/m3_pilot.jsonl")
+    ap.add_argument("--resume", action="store_true",
+                    help="이미 기록된 sample_id는 건너뛰고 이어서 실행 (크래시 대비)")
     a = ap.parse_args()
 
     budgets = [float(x) for x in a.budgets.split(",")]
@@ -61,7 +63,17 @@ def main():
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     run_id = f"m3pilot-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
 
-    with open(out_path, "w") as f:
+    done = set()
+    if a.resume and os.path.exists(out_path):
+        for line in open(out_path):
+            try:
+                r = json.loads(line)
+                if r.get("record_type") != "run_metadata":
+                    done.add(str(r["sample_id"]))
+            except Exception:
+                pass
+        print(f"[resume] 이미 완료한 화면 {len(done)}개 건너뜀", flush=True)
+    with open(out_path, "a" if a.resume else "w") as f:
         f.write(json.dumps({
             "record_type": "run_metadata", "schema_version": "1.1",
             "run_id": run_id, "stage": "M3", "run_kind": "smoke",
@@ -70,6 +82,8 @@ def main():
             "started_at": datetime.now(timezone.utc).isoformat()},
             ensure_ascii=False) + "\n")
         for di, row in enumerate(rows):
+            if str(row["sample_id"]) in done:
+                continue
             t0 = time.time()
             img = Image.open(os.path.join(ROOT, row["image"])).convert("RGB")
             qs = row["questions"][1:1 + a.questions_per_doc]  # 소스 질문 (교차와 동일)
