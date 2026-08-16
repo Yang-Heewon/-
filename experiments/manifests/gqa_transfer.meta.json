@@ -1,0 +1,50 @@
+{
+ "created": "2026-08-16T03:19:37.169506+00:00",
+ "generator": "vlm_diagnosis.scripts.prep_gqa_transfer",
+ "why": "세 번째 도메인(자연 이미지). GQA는 질문의 annotations.answer가 장면그래프 객체를 가리켜 근거 bbox를 자동으로 얻을 수 있고, ScreenQA와 같은 규칙으로 쌍 라벨을 자동 계산한다.",
+ "annotations": {
+  "source": "official GQA v1.2 (downloads.cs.stanford.edu/nlp/data/gqa)",
+  "files": {
+   "questions": "questions1.2.zip::val_balanced_questions.json (Last-Modified 2019-03-26)",
+   "scene_graphs": "sceneGraphs.zip::val_sceneGraphs.json (Last-Modified 2019-02-03)"
+  },
+  "split": "val_balanced",
+  "license": "CC BY 4.0 (gqadataset.org download 페이지 배지, 2026-08-16 확인)"
+ },
+ "images": {
+  "repo": "lmms-lab/GQA",
+  "config": "val_balanced_images",
+  "revision": "a6e72d6e1b912da88af8b2f9eba05d5ea8ec2dd8",
+  "caveat": "커뮤니티 미러(카드 라이선스 표기는 mit로 부정확) — confirmation 단계 전 공식 images.zip 표본 대조 권장"
+ },
+ "evidence_rule": "질문별 근거 bbox = annotations.answer가 가리키는 장면그래프 객체(들)의 union bbox, 이미지 경계로 클리핑. answers는 짧은 답([answer])만 — fullAnswer는 문장이라 EM 채점에 부적합, full_answer 필드로 별도 보존.",
+ "pair_rule": {
+  "T2": "IoU>=0.5 또는 중심거리<0.03",
+  "T3": "중심거리>=0.1",
+  "partial": "그 사이 — 해석 보류, 별도 보고",
+  "continuous": "evidence_iou / center_distance를 기록해 임계값 없는 연속 분석도 가능"
+ },
+ "roles": "shuffle 후 q0=episode, q1-3=source(평가), q4+=heldout (이미지당 8문항 캡)",
+ "stats": {
+  "images": 150,
+  "questions": 1050,
+  "pairs": 6516,
+  "pair_labels": {
+   "T2": 1802,
+   "T3": 4112,
+   "partial": 602
+  },
+  "question_exclusions": {
+   "답 객체 주석 없음 (yes/no·전역 질문 포함)": 82588,
+   "클리핑 후 퇴화 bbox": 1
+  },
+  "bbox_clipped": {
+   "클리핑된 bbox": 684
+  },
+  "eligible_questions": 49473,
+  "eligible_images": 3957,
+  "min_questions": 5,
+  "max_questions": 8
+ },
+ "human_task": "자동 라벨의 표본 검증만 (전수 라벨 불필요)"
+}
