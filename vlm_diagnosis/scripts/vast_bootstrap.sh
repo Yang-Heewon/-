@@ -9,7 +9,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."   # repo 루트
 
-echo "== 1/4 파이썬 환경 =="
+echo "== 1/4 파이썬 환경 (venv — 데비안 시스템 pip 회피) =="
+if [ ! -d /workspace/venv ]; then python3 -m venv /workspace/venv; fi
+source /workspace/venv/bin/activate
 pip install -q --upgrade pip
 pip install -q "transformers==4.57.6" "torch>=2.4" accelerate pillow \
   huggingface_hub pyarrow openpyxl
