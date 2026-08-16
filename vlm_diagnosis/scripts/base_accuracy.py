@@ -34,6 +34,8 @@ def main():
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--max-new-tokens", type=int, default=24)
     ap.add_argument("--out", default="results/smoke/base_accuracy.jsonl")
+    ap.add_argument("--resume", action="store_true",
+                    help="이미 기록된 sample_id는 건너뛰고 이어서 실행")
     a = ap.parse_args()
 
     rows = [json.loads(l) for l in open(os.path.join(ROOT, a.manifest))]
@@ -45,9 +47,19 @@ def main():
     os.makedirs(os.path.dirname(out), exist_ok=True)
     model, processor = load_qwen25vl(device=a.device, max_pixels=MAX_PIXELS)
 
+    done = set()
+    if a.resume and os.path.exists(out):
+        for line in open(out):
+            try:
+                done.add(str(json.loads(line)["sample_id"]))
+            except Exception:
+                pass
+        print(f"[resume] 이미 완료한 화면 {len(done)}개 건너뜀", flush=True)
     n = ok = 0
-    with open(out, "w") as f:
+    with open(out, "a" if a.resume else "w") as f:
         for di, r in enumerate(rows):
+            if str(r["sample_id"]) in done:
+                continue
             img = Image.open(os.path.join(ROOT, r["image"])).convert("RGB")
             t0 = time.time()
             for q in r["questions"]:
