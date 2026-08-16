@@ -15,7 +15,7 @@ source /workspace/venv/bin/activate
 pip install -q --upgrade pip
 # torch는 컨테이너 드라이버에 맞는 CUDA 빌드로 (기본 PyPI는 최신 CUDA를 요구해
 # "driver too old"로 CUDA 인식 실패할 수 있음 — 드라이버 12.8 기준 cu128)
-pip install -q torch --index-url https://download.pytorch.org/whl/cu128
+pip install -q torch torchvision --index-url https://download.pytorch.org/whl/cu128
 pip install -q "transformers==4.57.6" accelerate pillow \
   huggingface_hub pyarrow openpyxl
 
