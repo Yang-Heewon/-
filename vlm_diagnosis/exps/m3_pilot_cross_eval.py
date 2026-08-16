@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 import torch
 from PIL import Image
 
-from vlm_diagnosis.core.loader import load_qwen25vl
+from vlm_diagnosis.core.loader import load_vlm, kv_dims
 from vlm_diagnosis.core.spans import token_spans
 from vlm_diagnosis.core.masked_generate import greedy_generate_masked
 from vlm_diagnosis.core.metrics import anls, exact_match
@@ -29,13 +29,14 @@ from vlm_diagnosis.core import signals as S
 ROOT = os.path.join(os.path.dirname(__file__), "..", "..")
 MAX_PIXELS = 1280 * 28 * 28
 BRIEF = " Answer with a single word or phrase."
-N_LAYERS, N_KV_HEADS, HEAD_DIM = 28, 4, 128
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifest", default="experiments/manifests/m2a_diagnostic.jsonl")
     ap.add_argument("--device", default="cuda:0")
+    ap.add_argument("--model", default="qwen25vl",
+                    choices=["qwen25vl", "qwen3vl"])
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--nshards", type=int, default=1)
@@ -58,7 +59,8 @@ def main():
         rows = rows[:a.limit]
     if a.nshards > 1:
         a.out = a.out.replace(".jsonl", f".shard{a.shard}.jsonl")
-    model, processor = load_qwen25vl(device=a.device, max_pixels=MAX_PIXELS)
+    model, processor = load_vlm(a.model, device=a.device, max_pixels=MAX_PIXELS)
+    N_LAYERS, N_KV_HEADS, HEAD_DIM = kv_dims(model)
     out_path = os.path.join(ROOT, a.out)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     run_id = f"m3pilot-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"

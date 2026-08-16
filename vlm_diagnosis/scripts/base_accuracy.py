@@ -14,7 +14,7 @@ import time
 import torch
 from PIL import Image
 
-from vlm_diagnosis.core.loader import load_qwen25vl
+from vlm_diagnosis.core.loader import load_vlm
 from vlm_diagnosis.core.masked_generate import greedy_generate_masked
 from vlm_diagnosis.core.metrics import anls, exact_match
 from vlm_diagnosis.core import signals as S
@@ -29,6 +29,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifest", required=True)
     ap.add_argument("--device", default="cuda:0")
+    ap.add_argument("--model", default="qwen25vl",
+                    choices=["qwen25vl", "qwen3vl"])
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--nshards", type=int, default=1)
     ap.add_argument("--limit", type=int, default=None)
@@ -45,7 +47,7 @@ def main():
     out = os.path.join(ROOT, a.out.replace(
         ".jsonl", f".shard{a.shard}.jsonl" if a.nshards > 1 else ".jsonl"))
     os.makedirs(os.path.dirname(out), exist_ok=True)
-    model, processor = load_qwen25vl(device=a.device, max_pixels=MAX_PIXELS)
+    model, processor = load_vlm(a.model, device=a.device, max_pixels=MAX_PIXELS)
 
     done = set()
     if a.resume and os.path.exists(out):

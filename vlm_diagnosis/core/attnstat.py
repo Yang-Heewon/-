@@ -6,6 +6,7 @@ apply_multimodal_rotary_pos_emb를 감싸 post-RoPE q,k만 층 순서로 캡처�
 import math
 import torch
 import transformers.models.qwen2_5_vl.modeling_qwen2_5_vl as _qwen
+import transformers.models.qwen3_vl.modeling_qwen3_vl as _qwen3
 
 
 class QKCapture:
@@ -16,17 +17,25 @@ class QKCapture:
 
     def __enter__(self):
         self._orig = _qwen.apply_multimodal_rotary_pos_emb
+        self._orig3 = _qwen3.apply_rotary_pos_emb
 
         def wrapped(q, k, cos, sin, mrope_section, unsqueeze_dim=1):
             qr, kr = self._orig(q, k, cos, sin, mrope_section, unsqueeze_dim)
             self.qk.append((qr.detach(), kr.detach()))
             return qr, kr
 
+        def wrapped3(q, k, cos, sin, *a, **kw):
+            qr, kr = self._orig3(q, k, cos, sin, *a, **kw)
+            self.qk.append((qr.detach(), kr.detach()))
+            return qr, kr
+
         _qwen.apply_multimodal_rotary_pos_emb = wrapped
+        _qwen3.apply_rotary_pos_emb = wrapped3
         return self
 
     def __exit__(self, *exc):
         _qwen.apply_multimodal_rotary_pos_emb = self._orig
+        _qwen3.apply_rotary_pos_emb = self._orig3
         return False
 
 
