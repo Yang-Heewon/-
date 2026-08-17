@@ -49,7 +49,8 @@ TIMING = {"random": "write_time", "spatial_uniform": "write_time",
           "knorm": "write_time", "knorm_high": "write_time", "s5": "write_time",
           "h2o": "write_time_source_aware", "s1": "read_time",
           "snapkv": "write_time_source_aware",   # 원저 점수 규칙의 시각 적응 (3b)
-          "kvzip": "write_time"}                 # 원저 max 집계 적응 (3b)
+          "kvzip": "write_time",                 # 원저 max 집계 적응 (3b)
+          "covrisk": "write_time_source_aware"}  # 법칙 유도 기대-유지율 최대화 (신규)
 
 
 def _est_bytes(shape):
@@ -64,6 +65,37 @@ def _sparse_bytes(shape, k):
 
 def top_k_indices(scores, k):
     return set(torch.topk(scores, min(k, scores.shape[0])).indices.tolist())
+
+
+def covrisk_indices(prior, grid_hw, k, sigma=0.05, lam=0.7, device="cpu"):
+    """커버리지-위험 선택 (3b+): 기대 유지율 E = sum_x p(x) * r(min_dist(x, S))
+    를 greedy로 최대화. r(d)=exp(-d/sigma) — 단조 법칙(결과 13)의 함수형.
+    p(x) = lam*정규화(prior) + (1-lam)*균등. 목적함수가 단조·submodular 꼴이라
+    greedy는 (1-1/e) 근사 보증. prior=h2o(과거 이력) 기본.
+    grid_hw: 머지드 시각 그리드 (H, W) — 토큰 i의 좌표 (i//W, i%W)."""
+    H, W = grid_hw
+    n = H * W
+    ys = torch.arange(n, device=device) // W
+    xs = torch.arange(n, device=device) % W
+    diag = float((H ** 2 + W ** 2) ** 0.5)
+    pts = torch.stack([ys, xs], 1).float()
+    D = torch.cdist(pts, pts) / diag                      # (n, n) 정규화 거리
+    p = prior.to(device).float().clamp(min=0)
+    p = lam * (p / p.sum().clamp(min=1e-9)) + (1 - lam) / n
+    dmin = torch.full((n,), float("inf"), device=device)
+    keep = []
+    r = lambda d: torch.exp(-d / sigma)
+    base = torch.zeros(n, device=device)                  # r(dmin), inf→0
+    for _ in range(min(k, n)):
+        cand = torch.maximum(r(D), base[None, :].expand(n, n))   # (cand, x)
+        gains = (p[None, :] * (cand - base[None, :])).sum(1)
+        if keep:
+            gains[torch.tensor(keep, device=device)] = -1
+        c = int(gains.argmax())
+        keep.append(c)
+        dmin = torch.minimum(dmin, D[c])
+        base = r(dmin)
+    return set(keep)
 
 
 def uniform_indices(n_vis, k):
@@ -167,6 +199,9 @@ def main():
                 model, processor, img, q0["question"] + BRIEF,
                 a.device, a.max_new_tokens)
             s5 = S.score_s5(model, processor, img, a.device).cpu()
+            _ins0 = S.vlm_inputs(processor, img, "x", a.device)
+            _t, _gh, _gw = [int(x) for x in _ins0["image_grid_thw"][0]]
+            grid_hw = (_gh // 2, _gw // 2)                # merge 2x2 후 그리드
             need = set(a.selectors.split(",")) if a.selectors else set(TIMING)
             kvz = (S.score_kvzip(model, processor, img, a.device).cpu()
                    if "kvzip" in need else None)
@@ -205,6 +240,8 @@ def main():
                           "snapkv": snap}
                 if kvz is not None:
                     scores["kvzip"] = kvz
+                if "covrisk" in (a.selectors.split(",") if a.selectors else []):
+                    scores["covrisk"] = "COVRISK"          # 특수 처리 표지
                 if a.selectors:
                     wanted = set(a.selectors.split(","))
                     scores = {k: v for k, v in scores.items() if k in wanted}
@@ -212,8 +249,13 @@ def main():
                     k = max_keep_for_budget(shape, int(B * full_bytes), "sparse")
                     act = _sparse_bytes(shape, k)
                     for name, sc in scores.items():
-                        keep = (uniform_indices(n_vis, k) if sc is None
-                                else top_k_indices(sc, k))
+                        if isinstance(sc, str) and sc == "COVRISK":
+                            keep = covrisk_indices(h2o, grid_hw, k,
+                                                   device=a.device)
+                        elif sc is None:
+                            keep = uniform_indices(n_vis, k)
+                        else:
+                            keep = top_k_indices(sc, k)
                         evict = torch.tensor(
                             [int(vis[o]) for o in range(n_vis) if o not in keep],
                             device=a.device)
