@@ -131,3 +131,28 @@ def topk_keep(scores, budget):
     n = scores.shape[0]
     k = max(1, int(round(n * budget)))
     return set(torch.topk(scores, k).indices.tolist())
+
+
+@torch.no_grad()
+def score_kvzip(model, processor, img, device, max_new_tokens=96):
+    """KVzip 원저 점수의 시각 적응: 재구성 프롬프트로 생성한 서술 토큰 행들이
+    각 시각 토큰에 준 attention의 **최대값**(원저 max 집계; s5는 합 집계).
+    편차: 원저의 per-head 예산·컨텍스트 강제 재생(문맥을 타깃으로 강제)은
+    픽셀 입력이라 불가 — 생성 서술로 대체, 문서화."""
+    from vlm_diagnosis.core.attnstat import QKCapture, recv_column_stats
+    ins = vlm_inputs(processor, img,
+                     "Repeat the entire visible content of the image exactly, "
+                     "including all text.", device)
+    gen = model.generate(**{k: v for k, v in ins.items()},
+                         max_new_tokens=max_new_tokens, do_sample=False)
+    sp = token_spans(gen, model.config)
+    P = ins["input_ids"].shape[1]
+    attn = torch.ones(1, gen.shape[1], dtype=torch.long, device=device)
+    from vlm_diagnosis.core.masked_eval import mrope_position_ids
+    pos = mrope_position_ids(model, gen, ins["image_grid_thw"], attn)
+    with QKCapture() as cap:
+        model(input_ids=gen, attention_mask=attn, position_ids=pos,
+              pixel_values=ins["pixel_values"],
+              image_grid_thw=ins["image_grid_thw"], use_cache=False)
+        _, peak = recv_column_stats(cap.qk, P, gen.shape[1])
+    return peak[sp["visual"]].cpu()

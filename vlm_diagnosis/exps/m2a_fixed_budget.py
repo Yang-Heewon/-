@@ -35,7 +35,7 @@ from vlm_diagnosis.core.loader import load_vlm, kv_dims
 from vlm_diagnosis.core.spans import token_spans
 from vlm_diagnosis.core.masked_eval import mrope_position_ids
 from vlm_diagnosis.core.masked_generate import greedy_generate_masked
-from vlm_diagnosis.core.attnstat import QKCapture, recv_column_mass
+from vlm_diagnosis.core.attnstat import QKCapture, recv_column_mass, recv_snapkv
 from vlm_diagnosis.core.metrics import anls, exact_match, normalize_text
 from vlm_diagnosis.core.kv_baselines import (
     KVShape, dense_storage, sparse_storage, max_keep_for_budget)
@@ -47,7 +47,9 @@ BRIEF = " Answer with a single word or phrase."
 
 TIMING = {"random": "write_time", "spatial_uniform": "write_time",
           "knorm": "write_time", "knorm_high": "write_time", "s5": "write_time",
-          "h2o": "write_time_source_aware", "s1": "read_time"}
+          "h2o": "write_time_source_aware", "s1": "read_time",
+          "snapkv": "write_time_source_aware",   # 원저 점수 규칙의 시각 적응 (3b)
+          "kvzip": "write_time"}                 # 원저 max 집계 적응 (3b)
 
 
 def _est_bytes(shape):
@@ -91,12 +93,13 @@ def episode_capture(model, processor, img, q0_text, device, max_new_tokens):
               image_grid_thw=ins["image_grid_thw"], use_cache=False)
         mass = recv_column_mass(cap.qk, row_start=vis_end + 1, row_end=L)
         h2o = mass[vis].cpu()
+        snap = recv_snapkv(cap.qk, row_start=vis_end + 1, row_end=L)[vis].cpu()
         knorm = torch.zeros(len(vis))
         for _, k in cap.qk:
             kn = k[0].float().norm(dim=-1).mean(0)          # (L,) 헤드 평균
             knorm += kn[vis].cpu()
         knorm = -(knorm / len(cap.qk))                       # 작은 norm 우선 보존
-    return a0, h2o, knorm
+    return a0, h2o, knorm, snap
 
 
 def main():
@@ -160,10 +163,13 @@ def main():
             img = Image.open(os.path.join(ROOT, row["image"])).convert("RGB")
             qs = row["questions"]
             q0 = qs[0]
-            a0, h2o, knorm = episode_capture(
+            a0, h2o, knorm, snap = episode_capture(
                 model, processor, img, q0["question"] + BRIEF,
                 a.device, a.max_new_tokens)
             s5 = S.score_s5(model, processor, img, a.device).cpu()
+            need = set(a.selectors.split(",")) if a.selectors else set(TIMING)
+            kvz = (S.score_kvzip(model, processor, img, a.device).cpu()
+                   if "kvzip" in need else None)
             n_vis = s5.shape[0]
             sample_seed = zlib.crc32(
                 f"{a.seed}:{row['sample_id']}".encode()) & 0x7FFFFFFF
@@ -195,7 +201,10 @@ def main():
                 s1 = S.score_s1(model, processor, img, q_text, a.device).cpu()
                 scores = {"random": rnd, "spatial_uniform": None,
                           "knorm": knorm, "knorm_high": -knorm,
-                          "s5": s5, "h2o": h2o, "s1": s1}
+                          "s5": s5, "h2o": h2o, "s1": s1,
+                          "snapkv": snap}
+                if kvz is not None:
+                    scores["kvzip"] = kvz
                 if a.selectors:
                     wanted = set(a.selectors.split(","))
                     scores = {k: v for k, v in scores.items() if k in wanted}
