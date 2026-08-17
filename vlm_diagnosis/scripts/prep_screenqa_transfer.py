@@ -77,6 +77,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--screens", type=int, default=150)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--out-prefix", default="screenqa_transfer",
+                    help="출력 파일 접두 (discovery는 예: screenqa_discovery)")
+    ap.add_argument("--exclude-manifest", default=None,
+                    help="이 manifest에 있는 sample_id는 선택에서 제외 (파일럿과 분리)")
     ap.add_argument("--exclude-t4-pilot", action="store_true", default=True,
                     help="T4 파일럿에 쓴 화면은 제외 (실험 arm 분리)")
     a = ap.parse_args()
@@ -116,6 +120,11 @@ def main():
         eligible = {k: v for k, v in eligible.items() if k not in used_t4}
 
     ids = sorted(eligible)
+    if a.exclude_manifest:
+        used = {json.loads(l)["sample_id"] for l in open(a.exclude_manifest)}
+        before = len(ids)
+        ids = [i for i in ids if str(i) not in used]
+        print(f"[exclude] 파일럿 화면 {before - len(ids)}개 제외")
     random.Random(a.seed).shuffle(ids)
     picked = ids[:a.screens]
     print(f"사용가능 화면 {len(per_screen):,} → 질문 {MIN_Q}개 이상 {len(ids):,} "
@@ -166,11 +175,11 @@ def main():
                     "auto_label": lab, "label_source": "auto_bbox",
                 })
 
-    man = os.path.join(OUT_DIR, "screenqa_transfer.jsonl")
+    man = os.path.join(OUT_DIR, f"{a.out_prefix}.jsonl")
     with open(man, "w") as f:
         for s in screens_out:
             f.write(json.dumps(s, ensure_ascii=False) + "\n")
-    pf = os.path.join(OUT_DIR, "screenqa_transfer_pairs.jsonl")
+    pf = os.path.join(OUT_DIR, f"{a.out_prefix}_pairs.jsonl")
     with open(pf, "w") as f:
         for p in pairs_out:
             f.write(json.dumps(p, ensure_ascii=False) + "\n")

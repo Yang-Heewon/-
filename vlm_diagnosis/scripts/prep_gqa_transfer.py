@@ -204,6 +204,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--images", type=int, default=150)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--out-prefix", default="gqa_transfer",
+                    help="출력 파일 접두 (discovery는 예: gqa_discovery)")
+    ap.add_argument("--exclude-manifest", default=None,
+                    help="이 manifest에 있는 sample_id는 선택에서 제외 (파일럿과 분리)")
     a = ap.parse_args()
 
     questions = json.load(open(os.path.join(PROBE, "val_balanced_questions.json")))
@@ -214,6 +218,11 @@ def main():
 
     eligible = {k: v for k, v in per_img.items() if len(v) >= MIN_Q}
     ids = sorted(eligible)
+    if a.exclude_manifest:
+        used = {json.loads(l)["sample_id"] for l in open(a.exclude_manifest)}
+        before = len(ids)
+        ids = [i for i in ids if str(i) not in used]
+        print(f"[exclude] 파일럿 이미지 {before - len(ids)}개 제외")
     random.Random(a.seed).shuffle(ids)
     picked = ids[:a.images]
     print(f"근거 bbox 확보 질문 {sum(len(v) for v in per_img.values()):,} / "
@@ -263,11 +272,11 @@ def main():
                     "auto_label": lab, "label_source": "auto_bbox",
                 })
 
-    man = os.path.join(OUT_DIR, "gqa_transfer.jsonl")
+    man = os.path.join(OUT_DIR, f"{a.out_prefix}.jsonl")
     with open(man, "w") as f:
         for s in images_out:
             f.write(json.dumps(s, ensure_ascii=False) + "\n")
-    pf = os.path.join(OUT_DIR, "gqa_transfer_pairs.jsonl")
+    pf = os.path.join(OUT_DIR, f"{a.out_prefix}_pairs.jsonl")
     with open(pf, "w") as f:
         for p in pairs_out:
             f.write(json.dumps(p, ensure_ascii=False) + "\n")
