@@ -19,6 +19,32 @@ write 시점의 "미래 질문에 뭐가 필요할까"는 정보가 없어 원�
 read 시점에는 질문이 도착해 미래가 현재가 되므로, "지금 남은 조각으로 이 질문이
 풀리는가"를 싸게 잴 수 있다. 판정 시점을 옮기는 것이 방법의 전부다.
 
+## 0.4 재배치 (2026-08-18 심야 — 외부 검토 반영, 인용 실재 확인됨)
+
+**새 경쟁 지형**: VLCache(2512.12977, 동일 입력 재등장 시 전체 캐시 재사용·TTFT),
+TaskMem(2605.31075, 학습형 memorization policy), MIRIX(2507.07957, 멀티모달 기억
+시스템) 실재 확인. → 나머지 인용(PMMC·DMV-Bench·Mem-W·AstraNav·RD-framework)도
+검증 예정. **비어 있는 슬라이스 재확인**: "미래 질문 비공개 + 예산 제한 압축의
+실패 법칙 + read-시점 충분성 감지"는 여전히 미점유.
+
+**수용한 교정**:
+1. headline 재조정 — "Budgeted visual cache reuse under future-unknown queries:
+   failure law + read-time sufficiency detection". cross-question은 novelty가 아니라
+   통제 진단 도구(Stage-1 assay)로 명시. cache-acceleration track임을 전면 선언,
+   durable-storage 언어 전면 삭제 (감사 필요).
+2. draft cascade(1단)는 headline에서 시스템 절로 강등 (response-cache 성격).
+3. 실험 추가 1건: 실제 serialize→load→resume 경로의 캐스케이드 검증
+   (마스킹 시뮬레이션만으로 시스템 주장 금지 — M0 인프라 재사용).
+4. VLCache 대비 위치: 그들은 전체 캐시 재사용(보관 가능 가정), 우리는 예산 제약
+   하 부분 보관의 실패와 안전화 — 상보 명시.
+5. TaskMem 대비: 학습형 선택도 천장 격차를 닫는다는 증거 없음 — 우리 covrisk는
+   법칙-유도·훈련-불필요로 차별.
+
+**2번 논문 설계 확정**: substrate frontier — 동일 byte 예산에서
+픽셀코덱/텍스트구조/임베딩/시각토큰/KV를 원본-폐기 조건으로 비교하는
+controlled visual-memory substrate study (원래 목표 R1–R3의 완성형). 기존 후속
+큐(픽셀 계층·자기질문·covrisk 확장·M5 합성) 전부 이 우산 아래로 흡수.
+
 ## 0.5 방향 선언 (2026-08-18 확정 — 이후 변경은 이 절을 갱신하며)
 
 **이 논문(ICLR 2027)의 정체**: 진단이 이끄는 시스템 논문.
