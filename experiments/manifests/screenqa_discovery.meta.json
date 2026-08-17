@@ -1,0 +1,39 @@
+{
+ "created": "2026-08-17T01:30:35.329586+00:00",
+ "generator": "vlm_diagnosis.scripts.prep_screenqa_transfer",
+ "why": "DocVQA는 근거 좌표가 없어 사람 라벨이 필요했지만 ScreenQA는 답마다 bbox가 있어 쌍 라벨을 자동 계산할 수 있다. 사람은 표본 검증만 한다.",
+ "annotations": {
+  "source": "official screen_qa GitHub JSON",
+  "revision": "1dfdbccaf56948821b5fa8ffe5d186fe4751e46d",
+  "split": "validation"
+ },
+ "images": {
+  "repo": "bevaya/RICO-ScreenQA",
+  "revision": "44c8508ea528b4d4e035cc06e28d7baf8db09ec6",
+  "caveat": "community mirror — RICO 원본 대조는 confirmation 단계 전 권장"
+ },
+ "evidence_rule": "질문별 근거 bbox = 주석자별 ui_elements 합집합의 좌표별 median",
+ "pair_rule": {
+  "T2": "IoU>=0.5 또는 중심거리<0.03",
+  "T3": "중심거리>=0.1",
+  "partial": "그 사이 — 해석 보류, 별도 보고",
+  "continuous": "evidence_iou / center_distance를 기록해 임계값 없는 연속 분석도 가능"
+ },
+ "roles": "shuffle 후 q0=episode, q1-3=source(평가), q4+=heldout",
+ "stats": {
+  "screens": 172,
+  "questions": 1004,
+  "pairs": 5026,
+  "pair_labels": {
+   "T3": 4164,
+   "T2": 122,
+   "partial": 740
+  },
+  "question_exclusions": {
+   "짧은답 없음": 705
+  },
+  "eligible_screens": 172,
+  "min_questions": 5
+ },
+ "human_task": "자동 라벨의 표본 검증만 (전수 라벨 불필요)"
+}
