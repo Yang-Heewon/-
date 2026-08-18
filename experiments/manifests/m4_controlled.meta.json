@@ -1,0 +1,24 @@
+{
+  "claim_scope": "synthetic mechanism probe only; no real-world or novelty claims",
+  "dataset": "synthetic_m4_controlled",
+  "domain": "synthetic_mobile_ui",
+  "generator_version": "m4-controlled-generator-v1",
+  "image_size": [
+    896,
+    896
+  ],
+  "n_images": 24,
+  "probe_kind": "controlled_mechanism_probe",
+  "questions_per_image": 6,
+  "schema_version": "m4-controlled-schema-v1",
+  "seed": 42,
+  "synthetic": true,
+  "task_types": [
+    "ocr",
+    "semantic",
+    "layout",
+    "grounding",
+    "icon",
+    "count"
+  ]
+}

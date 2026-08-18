@@ -77,6 +77,12 @@ class KVBaselineTest(unittest.TestCase):
         self.assertLessEqual(hybrid_storage(shape, k_hybrid, 4).total_bytes, budget)
         self.assertGreater(k_hybrid, k_sparse)
 
+    def test_byte_planner_reports_infeasible_instead_of_overspending(self):
+        shape = KVShape(layers=28, batch=1, kv_heads=4, tokens=128, head_dim=128)
+        one_token = sparse_storage(shape, 1).total_bytes
+        self.assertEqual(max_keep_for_budget(shape, one_token - 1, "sparse"), 0)
+        self.assertEqual(max_keep_for_budget(shape, one_token, "sparse"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

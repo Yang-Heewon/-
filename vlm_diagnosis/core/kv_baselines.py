@@ -167,7 +167,11 @@ def max_keep_for_budget(
     key_group_size: int = 64,
     value_group_size: int = 64,
 ) -> int:
-    """Largest token count fitting a physical byte budget."""
+    """Largest token count fitting a physical byte budget.
+
+    Returns zero when even one token does not fit.  Callers must record that
+    condition as infeasible instead of silently exceeding the byte cap.
+    """
     if target_bytes <= 0:
         raise ValueError("target_bytes must be positive")
     lo, hi, best = 1, shape.tokens, 0
@@ -189,7 +193,7 @@ def max_keep_for_budget(
             best, lo = mid, mid + 1
         else:
             hi = mid - 1
-    return max(1, best)
+    return best
 
 
 def _groupwise_affine_fake_quantize_last(x: torch.Tensor, nbits: int, group_size: int) -> torch.Tensor:
