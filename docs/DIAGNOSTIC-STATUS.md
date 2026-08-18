@@ -210,6 +210,28 @@ v1 prompt는 `arguments:{...}`만 제시해 strict argument score를 인위적�
 - trace: `results/smoke/action_proxy_eval_v2.shard0.openat.log`,
   `results/smoke/action_proxy_eval_v2.shard1.openat.log`
 
+## 6.5 D1 raster 곡선 — 실데이터 확대 실행 (2026-08-19, 472 이미지)
+
+discovery 표본 전체(ScreenQA 172화면/516질문 + GQA 300장/900질문)에서 JPEG/AVIF ×
+2/8/32/128 KiB 코덱 곡선을 실행했다 (m4_codec_frontier 경로 — 압축 이미지로 입력을
+실제 교체하되 프로세스 분리 감사는 없는 real-data 등급, `strict_source_denial=false`).
+원본 정답 조건부 유지율:
+
+| 예산 | GUI (AVIF) | 자연 (AVIF) | 비고 |
+|---|---:|---:|---|
+| 128 KiB | 0.986 | 0.961 | 사실상 무손실 |
+| 32 KiB | **0.976** | **0.951** | 무손실에 근접 |
+| 8 KiB | 0.894* | 0.841 | *GUI는 120/276 화면이 8KiB에 못 들어감(infeasible) |
+| 2 KiB | (전멸) | 0.750* | *역시 다수 infeasible — 정직 기록 |
+
+**핵심 대비**: 5% sparse KV(≈3,300 KiB)의 유지율이 0.39~0.62(h2o)·0.54(KVzip)였던
+반면, **32 KiB 압축 사진은 0.95~0.98** — 약 100배 작은 용량으로 훨씬 높은 보존.
+"KV는 archive가 아니다"가 관문 3장이 아니라 472장 실데이터 규모에서 성립.
+GUI의 archive 최소 예산은 8~32 KiB 사이에 무릎이 있고, 자연 사진은 8 KiB까지도
+큰 손실이 없다(사진 친화적 압축). 남은 것: 같은 규모의 OCR 텍스트·KV 열을
+strict source-denial 경로로 실행해 한 표에 합치는 것.
+직접 근거: `results/discovery/d1_codec_sqa.jsonl`, `d1_codec_gqa.jsonl`.
+
 ## 7. 정확히 알고 있는 것과 아직 모르는 것
 
 ### 확인된 정보
