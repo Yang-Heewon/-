@@ -40,3 +40,9 @@ H1·H2·H3 모두 충족 → GVM 주장 성립(M7 승격 후보). 하나라도 �
 ## 6. 산출물
 
 fixture: `results/discovery/gates/stream/` · 러너: `vlm_diagnosis/exps/gate_stream_bench.py` · 결과: `results/discovery/gates/stream_bench.json` · 장부: FINDINGS 결과 26
+
+---
+
+## 판정 (2026-08-20 실행 완료 — 수치 무조정)
+
+H1 ✅ (+62pp) · H2 GVM ✅ / uniform 예측 ❌ (6.1%<30%) · **H3 ❌** (byte 44.5% 통과, 정확도 격차 4.0pp>2pp — 원인: 썸네일 강등의 판독 저하, 비개정 질문 한정) · H4 ✅ (진동 0) · H5 기록됨. §5 규칙에 따라 **전체 판정: 미충족**. 상세: FINDINGS 결과 26, `results/discovery/gates/stream_bench_summary.json`. 강등 연산자 교체(품질 강등/텍스트 병행)는 새 등록으로 진행할 것.
