@@ -42,3 +42,9 @@ fixture(20ep × 12관찰, 시드 20260820, PNG 재사용), 질문 200문, 다른
 ## 4. 산출물
 
 시뮬레이터: `vlm_diagnosis/scripts/sim_stream_policies_v2.py` · 읽기 매니페스트: `results/discovery/gates/stream/read_manifest_v2.jsonl` (GVM-v2 행만: 200문 × 2예산 = 400행) · GPU 결과: `stream_bench_v2.shard*.jsonl` · 판정: `stream_bench_v2_summary.json` · 장부: FINDINGS 결과 27
+
+---
+
+## 판정 (2026-08-20 실행 완료 — 수치 무조정)
+
+**H1′ ❌** (byte 44.0% 통과, EM 격차 2.5pp > 2pp — 0.5pp/문항 5개 차. 오답 9개 중 5개는 단위 절단으로 값 자체는 정독, 2개는 keep 동반 오답, 진짜 실패 2개. 보조지표 ANLS 격차 1.6pp) · **H2′ ✅** (@8KB 0.935 ≥ 0.85; v1 0.640 대비 +29.5pp) · **H3′ ✅** (낡은답 2.0%) · **H4′ ✅** (진동 0) · **H5′ ✅** (사용 페이지 0.9605 > 미사용 0.9194, +4.1pp). §3 규칙에 따라 **전체 판정: 미충족(H1′)**. 상세: FINDINGS 결과 27, `stream_bench_v2_summary.json`. 지표의 단위 정규화(EM→값 정규화 EM)는 새 등록으로만.
