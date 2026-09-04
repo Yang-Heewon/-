@@ -91,6 +91,8 @@ def main():
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--out", default="results/smoke/core_delta_incremental.jsonl")
     ap.add_argument("--resume", action="store_true")
+    ap.add_argument("--reverse", action="store_true",
+                    help="shard 내 이미지를 역순으로 처리 (같은 shard를 두 GPU가 양끝에서 처리할 때)")
     a = ap.parse_args()
 
     alphas = sorted({float(x) for x in a.alphas.split(",")}, reverse=True)
@@ -98,6 +100,8 @@ def main():
     assert set(schemes) <= {"keep", "grow"}
     rows = [json.loads(l) for l in open(os.path.join(ROOT, a.manifest))]
     rows = rows[a.shard::a.nshards]
+    if a.reverse:
+        rows = rows[::-1]
     if a.limit:
         rows = rows[:a.limit]
     if a.nshards > 1:
