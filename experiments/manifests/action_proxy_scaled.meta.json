@@ -1,0 +1,28 @@
+{
+  "action_type_counts": {
+    "click": 16,
+    "scroll": 16,
+    "type": 16
+  },
+  "claim_scope": "synthetic offline action-selection mechanism probe only; no real agent-trajectory, interactive-environment, deployment, generality, or novelty claims",
+  "dataset": "synthetic_action_proxy_controlled",
+  "domain": "synthetic_mobile_project_ui",
+  "generator_version": "action-proxy-generator-v1",
+  "history_pattern": [
+    "old_observation",
+    "executed_click",
+    "current_observation"
+  ],
+  "image_size": [
+    768,
+    896
+  ],
+  "interactive_environment": false,
+  "n_episodes": 48,
+  "n_images": 96,
+  "probe_kind": "controlled_d5_offline_action_mechanism_probe",
+  "real_trajectory_claim_allowed": false,
+  "schema_version": "action-proxy-schema-v1",
+  "seed": 777,
+  "synthetic": true
+}

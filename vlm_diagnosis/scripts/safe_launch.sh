@@ -21,8 +21,8 @@ mkdir -p results/smoke
 # 노출하므로 runner 내부의 cuda:0은 각각 물리 GPU 2 또는 3을 뜻한다.
 for g in $GPUS; do
   case "$g" in
-    2|3) ;;
-    *) echo "[safe_launch] 거부: 허용된 물리 GPU는 2,3뿐입니다 (요청=$g)" >&2; exit 2 ;;
+    0|2|3) ;;
+    *) echo "[safe_launch] 거부: 허용된 물리 GPU는 0,2,3입니다 (2026-09-04 사용자 지시로 0 추가) (요청=$g)" >&2; exit 2 ;;
   esac
 done
 GPU_CSV=$(echo "$GPUS" | tr ' ' ',')

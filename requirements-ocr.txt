@@ -1,0 +1,9 @@
+# Independent OCR baseline. Install only in the project-local `.venv` created
+# with `--system-site-packages`; NumPy 1.26 is a local ABI compatibility pin for
+# PaddleX/Matplotlib and must not replace the main VLM environment's NumPy 2.x.
+numpy==1.26.4
+scipy==1.13.1
+scikit-learn==1.5.2
+matplotlib==3.9.2
+paddlepaddle==3.3.1
+paddleocr==3.7.0
