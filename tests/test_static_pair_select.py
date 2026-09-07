@@ -188,3 +188,45 @@ class DiversityAndSpikeTest(unittest.TestCase):
             S.importance_diversity_select(score, keys, prot, 24, 0, 1.5)
         with self.assertRaises(ValueError):
             S.importance_diversity_select(score, keys, prot, 7, 0, 0.5)
+
+
+class HiddenToKTest(unittest.TestCase):
+    def setUp(self):
+        torch.manual_seed(1)
+        self.L, self.H, self.T, self.d = 2, 2, 24, 4
+        self.keys = torch.randn(self.L, self.H, self.T, self.d)
+        self.prot = torch.zeros(self.T, dtype=torch.bool); self.prot[:2] = True
+        self.z = torch.randn(self.T, 8)
+        self.clusters = S.kmeans_labels(self.z, 4)
+
+    def test_kmeans_labels(self):
+        self.assertEqual(tuple(self.clusters.shape), (self.T,)); self.assertLess(int(self.clusters.max()), 4)
+        self.assertTrue(torch.equal(self.clusters, S.kmeans_labels(self.z, 4)))
+
+    def test_token_coverage_exact_budget_and_shared_tokens(self):
+        for B in (32, 35, 96):
+            keep = S.token_coverage_select(self.z, self.prot, B, self.L, self.H)
+            self.assertEqual(int(keep.sum()), B); self.assertTrue(bool(keep[:, :, :2].all()))
+        keep = S.token_coverage_select(self.z, self.prot, 32, self.L, self.H)
+        self.assertTrue(all(torch.equal(keep[0, 0], keep[l, h]) for l in range(2) for h in range(2)))
+        with self.assertRaises(ValueError):
+            S.token_coverage_select(self.z, self.prot, 7, self.L, self.H)
+
+    def test_cluster_quota_budget_protection_and_quota(self):
+        B = 48
+        keep = S.cluster_quota_select(self.keys, self.clusters, self.prot, B, seed=0, share=0.5)
+        self.assertEqual(int(keep.sum()), B); self.assertTrue(bool(keep[:, :, :2].all()))
+        # 각 그룹에서 모든 군집이 최소 1개는 대표됨 (예산 12/그룹, share 0.5 → 6 개를 4 군집에 배분)
+        for l in range(2):
+            for h in range(2):
+                covered = set(self.clusters[keep[l, h]].tolist())
+                self.assertEqual(covered, set(range(4)))
+        # share=0 이면 순수 K farthest-point 와 같은 그룹별 절차 (군집 무시)
+        k0 = S.cluster_quota_select(self.keys, self.clusters, self.prot, B, 0, share=0.0)
+        self.assertEqual(int(k0.sum()), B)
+        # score 를 주면 군집 안 상위 점수 선택
+        score = torch.rand(self.L, self.H, self.T)
+        ks = S.cluster_quota_select(self.keys, self.clusters, self.prot, B, 0, share=0.5, score=score)
+        self.assertEqual(int(ks.sum()), B)
+        with self.assertRaises(ValueError):
+            S.cluster_quota_select(self.keys, self.clusters, self.prot, B, 0, share=1.5)

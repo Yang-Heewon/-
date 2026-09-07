@@ -322,3 +322,136 @@ def importance_diversity_select(score: torch.Tensor, keys: torch.Tensor, protect
     if int(keep.sum()) != budget or not bool(keep[protected].all()):
         raise RuntimeError("importance+diversity selection violated budget or protection")
     return keep
+
+
+# ---------------------------------------------------------------------------------------------
+# 2026-09-08 추가: token 수준 커버리지(은닉 상태 기하) → head 수준 K 선택 (Stage 1 "Hidden → K")
+# ---------------------------------------------------------------------------------------------
+def kmeans_labels(z: torch.Tensor, k: int, iters: int = 25, seed: int = 0) -> torch.Tensor:
+    """(T, d) → (T,) 군집 번호. 고정 seed 의 k-means (학습 없음)."""
+    g = torch.Generator().manual_seed(int(seed))
+    z = z.float()
+    c = z[torch.randperm(z.shape[0], generator=g)[:k]].clone()
+    for _ in range(iters):
+        lab = torch.cdist(z, c).argmin(1)
+        for j in range(k):
+            if (lab == j).any():
+                c[j] = z[lab == j].mean(0)
+    return lab
+
+
+def _fp_fill(K_g: torch.Tensor, selected: torch.Tensor, candidates: torch.Tensor, n: int) -> torch.Tensor:
+    """한 그룹(층·head) 안에서, 이미 선택된 조각을 대표로 두고 candidates 중 K 코사인 farthest-point 로 n 개 추가. 반환 갱신된 selected."""
+    sel = selected.clone()
+    if n <= 0:
+        return sel
+    Kn = K_g / K_g.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+    cand = candidates & ~sel
+    if int(cand.sum()) < n:
+        raise ValueError("not enough candidates for farthest-point fill")
+    if sel.any():
+        mind = (1.0 - Kn @ Kn[sel].T).min(1).values
+    else:
+        mind = torch.full((Kn.shape[0],), 2.0)
+    mind[~cand] = -1.0
+    for _ in range(n):
+        i = int(mind.argmax())
+        sel[i] = True
+        mind = torch.minimum(mind, 1.0 - Kn @ Kn[i])
+        mind[i] = -1.0
+    return sel
+
+
+def token_coverage_select(z_tokens: torch.Tensor, protected: torch.Tensor, budget: int, n_layers: int, n_heads: int,
+                          seed: int = 0) -> torch.Tensor:
+    """token 수준 커버리지만: z_tokens (T, d) 에서 k-center 로 token 집합을 고르고 모든 (층, head) 에 같은 token 을 남긴다.
+    예산 B 는 쌍 단위이므로 token 수 = B / (L·H) (나머지는 앞 층·head 부터 1개씩 farthest-point 다음 순번으로)."""
+    T = z_tokens.shape[0]
+    protected = torch.as_tensor(protected, dtype=torch.bool).cpu()
+    if protected.ndim == 3:
+        protected = protected.any(0).any(0)
+    G = n_layers * n_heads
+    if budget < int(protected.sum()) * G:
+        raise ValueError("budget smaller than protected pairs")
+    free = budget - int(protected.sum()) * G
+    n_tok, rem = free // G, free % G
+    order = farthest_point_order(z_tokens[None].float(), n_tok + 1, seed_mask=protected[None])[0]
+    order[protected] = -1.0
+    ranked = torch.argsort(order, descending=True)
+    base = protected.clone(); base[ranked[:n_tok]] = True
+    keep = base[None, None, :].expand(n_layers, n_heads, T).clone()
+    if rem:
+        extra = ranked[n_tok]
+        flat = keep.view(G, T)
+        for g in range(rem):
+            flat[g, extra] = True
+    if int(keep.sum()) != budget:
+        raise RuntimeError("token coverage selection violated budget")
+    return keep
+
+
+def cluster_quota_select(keys, clusters: torch.Tensor, protected: torch.Tensor, budget: int, seed: int,
+                         share: float = 0.5, score: torch.Tensor | None = None) -> torch.Tensor:
+    """Hidden → K. clusters (T,) = token 수준 의미 군집(은닉 상태 기하). 각 (층, head) 그룹의 예산 가운데 share 만큼을
+    군집에 균등 배분해 군집 안에서 고르고(score 가 없으면 K farthest-point, 있으면 score 상위), 나머지는 그룹 전역으로
+    (score 없으면 이미 뽑힌 것을 대표로 한 K farthest-point, 있으면 score 상위). 보호 쌍 포함, keep.sum()==budget."""
+    if not (0.0 <= share <= 1.0):
+        raise ValueError("share must be in [0, 1]")
+    if not isinstance(keys, torch.Tensor):
+        keys = torch.stack([pair[0][0].float() for pair in keys])         # (L,H,T,d)
+    L, H, T, _ = keys.shape
+    keys = keys.cpu()
+    clusters = torch.as_tensor(clusters).long().cpu()
+    protected = torch.as_tensor(protected, dtype=torch.bool).cpu()
+    if protected.ndim == 1:
+        protected = protected[None, None, :].expand(L, H, T)
+    if score is not None:
+        score = torch.as_tensor(score).float().cpu()
+    G = L * H
+    n_prot = int(protected.sum())
+    if budget < n_prot:
+        raise ValueError("budget smaller than protected pairs")
+    free = budget - n_prot
+    per = [free // G + (1 if g < free % G else 0) for g in range(G)]
+    C = int(clusters.max()) + 1
+    keep = protected.clone().view(G, T)
+    Kf = keys.view(G, T, -1)
+    sizes = torch.bincount(clusters, minlength=C)
+    tie = _tie_permutation((T,), seed).float()
+    for g in range(G):
+        sel = keep[g].clone()
+        n_q = int(round(share * per[g]))
+        quota = [n_q // C + (1 if c < n_q % C else 0) for c in range(C)]
+        got = 0
+        for c in range(C):
+            cand = (clusters == c) & ~sel
+            take = min(quota[c], int(cand.sum()))
+            if take <= 0:
+                continue
+            if score is None:
+                sel = _fp_fill(Kf[g], sel, cand, take)
+            else:
+                s = score.view(G, T)[g].clone(); s[~cand] = float("-inf")
+                idx = torch.nonzero(cand, as_tuple=True)[0]
+                idx = idx[torch.argsort(tie[idx], stable=True)]
+                idx = idx[torch.argsort(s[idx], descending=True, stable=True)][:take]
+                sel[idx] = True
+            got += take
+        rest = per[g] - got
+        cand = ~sel
+        if int(cand.sum()) < rest:
+            raise ValueError("not enough pairs for the global remainder")
+        if rest > 0:
+            if score is None:
+                sel = _fp_fill(Kf[g], sel, cand, rest)
+            else:
+                s = score.view(G, T)[g].clone(); s[~cand] = float("-inf")
+                idx = torch.nonzero(cand, as_tuple=True)[0]
+                idx = idx[torch.argsort(tie[idx], stable=True)]
+                idx = idx[torch.argsort(s[idx], descending=True, stable=True)][:rest]
+                sel[idx] = True
+        keep[g] = sel
+    keep = keep.view(L, H, T)
+    if int(keep.sum()) != budget or not bool(keep[protected].all()):
+        raise RuntimeError("cluster quota selection violated budget or protection")
+    return keep

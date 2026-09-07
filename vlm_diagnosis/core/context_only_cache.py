@@ -189,6 +189,9 @@ def method_scores(method: str, pre: dict, n_layers: int, n_heads: int, seed: int
         keys = torch.stack([k[0, :, :T].float() for k, _ in kv]).reshape(Lk * Hk, T, -1)
         n = int(round((extra or {}).get("kcover_steps", 0.25) * T)) + 8
         return SEL.farthest_point_order(keys, n, start=4).view(Lk, Hk, T), "k_space_farthest_point", info
+    if method == "hidden":
+        # 점수 없음: 선택기(hidcover / hid2k)가 extra 의 은닉 상태 기하를 직접 사용
+        return torch.zeros(n_layers, n_heads, T), "hidden_geometry", info
     if method in ("expattn", "expattn_v"):
         if extra is None or method not in extra:
             raise ValueError(f"{method} requires an externally computed score")
@@ -273,6 +276,12 @@ def build_memory(model, processor, pre: dict, context_id: str, method: str, keep
             keep = SEL.boundary_control_select(s, protected, B, seed, boundary_seed)
         elif selector.startswith("div"):
             keep = SEL.importance_diversity_select(s, kv, protected, B, seed, int(selector[3:]) / 100.0)
+        elif selector == "hidcover":
+            keep = SEL.token_coverage_select(extra_scores["hidden_z"], protected, B, n_layers, n_heads, seed)
+        elif selector.startswith("hid2k") or selector.startswith("hidquota"):
+            share = (extra_scores or {}).get("hidden_share", 0.5)
+            keep = SEL.cluster_quota_select(kv, extra_scores["hidden_clusters"], protected, B, seed, share,
+                                            score=None if selector.startswith("hid2k") else s)
         else:
             raise ValueError(f"unknown selector {selector}")
     t_select = time.perf_counter() - t1
