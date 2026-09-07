@@ -30,7 +30,7 @@ from .signals import vlm_inputs
 from . import static_pair_select as SEL
 
 CONTEXT_ONLY_METHODS = ("full", "random", "recent", "k_norm", "v_norm", "mlp_norm", "r", "d", "d_shift",
-                        "r_std", "hidden_rel", "hidden_cos", "d_shuffle", "d_anchor")
+                        "r_std", "hidden_rel", "hidden_cos", "d_shuffle", "d_anchor", "kcover")
 COST_FLAGGED_METHODS = ("attn1",)          # context-only 이지만 attention 재계산 비용이 붙는 방법
 EXTERNAL_METHODS = ("recon_desc",)         # 재구성(설명문 생성) — 단일 prefill 계약 밖, 별도 명시 실행에서만
 
@@ -184,6 +184,15 @@ def method_scores(method: str, pre: dict, n_layers: int, n_heads: int, seed: int
         return SEL.recent_scores(n_layers, n_heads, T), "recent", info
     if method in ("k_norm", "v_norm"):
         return SEL.head_norm_scores(pre["kv"], method[0]), "head_norm", info
+    if method == "kcover":
+        kv = pre["kv"]; Lk, Hk = len(kv), kv[0][0].shape[1]
+        keys = torch.stack([k[0, :, :T].float() for k, _ in kv]).reshape(Lk * Hk, T, -1)
+        n = int(round((extra or {}).get("kcover_steps", 0.25) * T)) + 8
+        return SEL.farthest_point_order(keys, n, start=4).view(Lk, Hk, T), "k_space_farthest_point", info
+    if method in ("expattn", "expattn_v"):
+        if extra is None or method not in extra:
+            raise ValueError(f"{method} requires an externally computed score")
+        return extra[method].float(), method, info
     if method in ("attn1", "recon_desc"):
         if extra is None or method not in extra:
             raise ValueError(f"{method} requires an externally computed score")
@@ -222,7 +231,7 @@ def method_scores(method: str, pre: dict, n_layers: int, n_heads: int, seed: int
 def build_memory(model, processor, pre: dict, context_id: str, method: str, keep_ratio: float, seed: int,
                  device, direction: str = "keep_high", selector: str = "global", special_ids=(),
                  n_prefix_protect: int = 4, extra_scores: dict | None = None, boundary_seed: int = 777,
-                 timing: dict | None = None):
+                 timing: dict | None = None, protect_mode: str = "fixed", spike_factor: float = 10.0):
     """prefill 결과(pre)에서 method 로 점수를 매겨 실제 삭제된 CompressedMemory 를 만든다.
     direction: keep_high(기본) | keep_low(높은 점수부터 삭제 = 민감도 대조).
     selector: global | layer_matched | boundary."""
@@ -232,7 +241,17 @@ def build_memory(model, processor, pre: dict, context_id: str, method: str, keep
     head_dim = kv[0][0].shape[-1]
     n_pairs = n_layers * n_heads * T
     B = SEL.budget_pairs(keep_ratio, n_layers, n_heads, T)
-    protected = SEL.protected_positions(pre["prefix_ids"], special_ids, n_prefix_protect)
+    if protect_mode == "fixed":
+        protected = SEL.protected_positions(pre["prefix_ids"], special_ids, n_prefix_protect)
+    elif protect_mode == "auto":
+        # MLP 스파이크(massive activation) 로 sink 를 자동 탐지 + tokenizer special. 앞 n개 고정 보호는 쓰지 않음.
+        if pre["dynamics"] is None:
+            raise ValueError("protect_mode=auto requires MLP dynamics from the prefill")
+        protected = SEL.protected_positions(pre["prefix_ids"], special_ids, 0) | SEL.massive_activation_positions(pre["dynamics"].R, spike_factor)
+    elif protect_mode == "none":
+        protected = torch.zeros(T, dtype=torch.bool)
+    else:
+        raise ValueError(f"unknown protect_mode {protect_mode}")
     _sync(device); t0 = time.perf_counter()
     score, mapping, info = method_scores(method, pre, n_layers, n_heads, seed, extra_scores)
     _sync(device); t_score = time.perf_counter() - t0
@@ -252,6 +271,8 @@ def build_memory(model, processor, pre: dict, context_id: str, method: str, keep
             keep = SEL.layer_matched_select(s, protected, B, seed)
         elif selector == "boundary":
             keep = SEL.boundary_control_select(s, protected, B, seed, boundary_seed)
+        elif selector.startswith("div"):
+            keep = SEL.importance_diversity_select(s, kv, protected, B, seed, int(selector[3:]) / 100.0)
         else:
             raise ValueError(f"unknown selector {selector}")
     t_select = time.perf_counter() - t1
@@ -274,7 +295,8 @@ def build_memory(model, processor, pre: dict, context_id: str, method: str, keep
         prefill_calls=pre.get("prefill_calls", 1), prefill_seconds=pre["prefill_seconds"], score_seconds=t_score, select_seconds=t_select,
         prune_seconds=t_prune, build_seconds=pre["input_seconds"] + pre["prefill_seconds"] + t_score + t_select + t_prune,
         peak_bytes=peak, residual_max_rel_err=float(dyn.residual_max_rel_err.max()) if dyn is not None else None,
-        next_position=pre["next_position"], extra={"selector": selector,
+        next_position=pre["next_position"], extra={"selector": selector, "protect_mode": protect_mode,
+            "n_protected_tokens": int(protected.sum()),
             "per_head_counts": cache.counts, "pair_bytes": cache.pair_bytes,
             "prefill_peak_bytes": pre.get("prefill_peak_bytes", 0),
             "peak_scope": "shared_evaluation_harness", "costs_valid_for_method": False, **info})

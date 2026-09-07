@@ -228,3 +228,97 @@ def keep_ids_per_head(keep: torch.Tensor):
 
 def selection_digest(keep: torch.Tensor) -> str:
     return hashlib.sha256(keep.cpu().numpy().tobytes()).hexdigest()[:16]
+
+
+# ---------------------------------------------------------------------------------------------
+# 2026-09-07 추가: 다양성 채우기, K 공간 farthest-point 순서, MLP 스파이크 기반 보호
+# ---------------------------------------------------------------------------------------------
+def massive_activation_positions(R: torch.Tensor, factor: float = 10.0) -> torch.Tensor:
+    """(T,) bool: 어느 층에서든 R[l,i] 가 그 층 중앙값의 factor 배를 넘는 token (massive activation / sink 후보).
+    R: (L, T). factor 는 개발 세트에서 고정 (화면 표본: 10 → 화면당 약 1개, 5 → 약 30개로 시각 token 까지 포함)."""
+    _validate_R(R)
+    med = R.median(dim=1, keepdim=True).values.clamp(min=1e-12)
+    return ((R / med) > factor).any(0).cpu()
+
+
+def farthest_point_order(keys: torch.Tensor, n_steps: int, start: int = 0, seed_mask: torch.Tensor | None = None) -> torch.Tensor:
+    """keys (G, T, d): 그룹(층·head)마다 코사인 거리 farthest-point 순서. 반환 score (G, T):
+    뽑힌 순번이 빠를수록 큼(T − 순번), 미선택은 남은 최소거리 × 0.5 (항상 선택분 아래).
+    seed_mask (G, T) bool 이 있으면 그 조각들을 이미 뽑힌 대표로 두고 시작한다(다양성 채우기용)."""
+    if keys.ndim != 3 or keys.shape[1] < 1:
+        raise ValueError("keys must be (G, T, d)")
+    G, T, _ = keys.shape
+    K = keys.float()
+    K = K / K.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+    dev = K.device
+    score = torch.zeros(G, T, device=dev)
+    mind = torch.full((G, T), float("inf"), device=dev)
+    ar = torch.arange(G, device=dev)
+    if seed_mask is not None:
+        sm = seed_mask.to(dev)
+        for g in range(G):
+            idx = torch.nonzero(sm[g], as_tuple=True)[0]
+            if idx.numel():
+                d = 1.0 - K[g] @ K[g, idx].T                       # (T, n_seed)
+                mind[g] = d.min(1).values
+                mind[g, idx] = -1.0
+        cur = mind.argmax(-1)
+    else:
+        cur = torch.full((G,), min(start, T - 1), dtype=torch.long, device=dev)
+    for step in range(min(n_steps, T)):
+        if seed_mask is not None and bool((mind[ar, cur] < 0).all()):
+            break                                                   # 남은 후보 없음
+        score[ar, cur] = float(T - step)
+        c = K[ar, cur]
+        dist = 1.0 - torch.einsum("bd,bnd->bn", c, K)
+        mind = torch.minimum(mind, dist)
+        mind[ar, cur] = -1.0
+        cur = mind.argmax(-1)
+    rest = score == 0
+    score[rest] = (mind.clamp(min=0) * 0.5)[rest]
+    return score.cpu()
+
+
+def importance_diversity_select(score: torch.Tensor, keys: torch.Tensor, protected: torch.Tensor, budget: int,
+                                seed: int, div_frac: float) -> torch.Tensor:
+    """중요도 + 다양성. score (L,H,T); keys (L,H,T,d) 또는 [(k,v)] 형태의 kv.
+    1) 보호 + 전역 top-(round((1−div_frac)·(B−보호))) 를 score 로 선택
+    2) 나머지 예산을 (층, head) 그룹에 균등 배분해, 각 그룹에서 이미 뽑힌 조각들과 K 공간(코사인)에서
+       가장 먼 조각부터 채운다 (farthest-point, 이미 뽑힌 것들을 시작 대표로 사용).
+    반환 keep (L,H,T), keep.sum() == budget."""
+    if not (0.0 <= div_frac <= 1.0):
+        raise ValueError("div_frac must be in [0, 1]")
+    score = torch.as_tensor(score).float().cpu()
+    L, H, T = score.shape
+    if not isinstance(keys, torch.Tensor):
+        keys = torch.stack([pair[0][0].float() for pair in keys])          # (L,H,T,d)
+    keys = keys[:, :, :T]
+    if tuple(keys.shape[:3]) != (L, H, T):
+        raise ValueError("keys shape disagrees with score")
+    protected = torch.as_tensor(protected, dtype=torch.bool).cpu()
+    if protected.ndim == 1:
+        protected = protected[None, None, :].expand(L, H, T)
+    n_prot = int(protected.sum())
+    if budget < n_prot:
+        raise ValueError(f"budget {budget} smaller than protected pairs {n_prot}")
+    n_free = budget - n_prot
+    n_div = int(round(div_frac * n_free))
+    n_imp = n_free - n_div
+    keep = select_pairs(score, protected, n_prot + n_imp, seed)
+    if n_div:
+        G = L * H
+        per = [n_div // G + (1 if g < n_div % G else 0) for g in range(G)]
+        order = farthest_point_order(keys.reshape(G, T, -1), max(per), seed_mask=keep.reshape(G, T))
+        kf = keep.reshape(G, T).clone()
+        for g in range(G):
+            if per[g] == 0:
+                continue
+            cand = torch.nonzero(~kf[g], as_tuple=True)[0]
+            if cand.numel() < per[g]:
+                raise ValueError("not enough unselected pairs for the diversity fill")
+            top = cand[torch.argsort(order[g, cand], descending=True, stable=True)[:per[g]]]
+            kf[g, top] = True
+        keep = kf.view(L, H, T)
+    if int(keep.sum()) != budget or not bool(keep[protected].all()):
+        raise RuntimeError("importance+diversity selection violated budget or protection")
+    return keep

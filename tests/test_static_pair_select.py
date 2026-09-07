@@ -153,3 +153,38 @@ class SelectTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DiversityAndSpikeTest(unittest.TestCase):
+    def test_massive_activation_positions(self):
+        R = torch.ones(4, 10); R[2, 3] = 50.0; R[0, 7] = 4.0
+        m = S.massive_activation_positions(R, factor=10)
+        self.assertEqual(m.tolist(), [i == 3 for i in range(10)])
+        self.assertEqual(int(S.massive_activation_positions(R, factor=3).sum()), 2)
+
+    def test_farthest_point_order_prefers_distinct_keys(self):
+        # 3 clusters: 0,1,2 identical / 3,4 identical / 5 unique
+        base = torch.tensor([[1., 0.], [1., 0.], [1., 0.], [0., 1.], [0., 1.], [-1., 0.]])
+        order = S.farthest_point_order(base[None], n_steps=3, start=0)[0]
+        top3 = set(torch.topk(order, 3).indices.tolist())
+        self.assertEqual(top3, {0, 5, 3} if 3 in top3 else {0, 5, 4})
+        # seed_mask: 이미 뽑힌 0 을 대표로 두면 첫 선택은 가장 먼 5
+        order2 = S.farthest_point_order(base[None], n_steps=1, seed_mask=torch.tensor([[True, False, False, False, False, False]]))[0]
+        self.assertEqual(int(order2.argmax()), 5)
+
+    def test_importance_diversity_budget_and_fill(self):
+        torch.manual_seed(0)
+        L, H, T, d = 2, 2, 12, 4
+        score = torch.rand(L, H, T); keys = torch.randn(L, H, T, d)
+        prot = torch.zeros(T, dtype=torch.bool); prot[:2] = True
+        for frac in (0.0, 0.5, 1.0):
+            keep = S.importance_diversity_select(score, keys, prot, 24, seed=0, div_frac=frac)
+            self.assertEqual(int(keep.sum()), 24); self.assertTrue(bool(keep[:, :, :2].all()))
+        k0 = S.importance_diversity_select(score, keys, prot, 24, 0, 0.0)
+        self.assertTrue(torch.equal(k0, S.select_pairs(score, prot, 24, 0)))
+        k5 = S.importance_diversity_select(score, keys, prot, 24, 0, 0.5)
+        self.assertFalse(torch.equal(k0, k5))
+        with self.assertRaises(ValueError):
+            S.importance_diversity_select(score, keys, prot, 24, 0, 1.5)
+        with self.assertRaises(ValueError):
+            S.importance_diversity_select(score, keys, prot, 7, 0, 0.5)
