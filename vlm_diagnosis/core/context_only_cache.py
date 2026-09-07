@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
+from contextlib import ExitStack
 import time
 
 import torch
@@ -73,10 +74,10 @@ class BuildReport:
 class CompressedMemory:
     """생존 K/V 만 소유하는 context 메모리 + 질문 suffix 를 붙이기 위한 template."""
 
-    def __init__(self, cache: RaggedKVCache, template: QwenImageTemplate, next_position: int, prefix_len: int):
+    def __init__(self, cache: RaggedKVCache, template, next_position: int, prefix_len: int, adapter=None):
         self.cache, self.template = cache, template
         self.next_position, self.prefix_len = next_position, prefix_len
-        self.adapter = QwenPairAdapter()
+        self.adapter = QwenPairAdapter() if adapter is None else adapter
 
     @property
     def kv_bytes(self):
@@ -93,7 +94,7 @@ class CompressedMemory:
             setattr(c, k, getattr(self.cache, k))
         c.heads = [HeadKV(h.key.clone(), h.value.clone(), h.token_ids.clone()) for h in self.cache.heads]
         c.backend_active, c._next_layer, c.query_ids = False, 0, None
-        return CompressedMemory(c, self.template, self.next_position, self.prefix_len)
+        return CompressedMemory(c, self.template, self.next_position, self.prefix_len, self.adapter)
 
     def resident_ids(self):
         return [h.token_ids.clone() for h in self.cache.heads]
@@ -106,12 +107,32 @@ class CompressedMemory:
 def prefill_context(model, processor, image, device, collect_dynamics=True, capture_qk=False, eps=1e-6):
     """context(이미지) prefill 정확히 1회. 반환 dict: kv(GPU dense tuple), prefix_ids, next_position,
     spans, dynamics(MLPDynamics|None), qk(list|None), prefill_seconds, input_seconds."""
+    _sync(device)
+    cuda = torch.device(device).type == "cuda"
+    if cuda:
+        # Exactly once at the START of a build, never between prefill and pruning.
+        torch.cuda.reset_peak_memory_stats(device)
     t_in = time.perf_counter()
-    ins = vlm_inputs(processor, image, "x", device)
-    sp = token_spans(ins["input_ids"], model.config)
-    P = int(sp["vis_end"]) + 2
-    ids = ins["input_ids"][:, :P]
-    pos = mrope_position_ids(model, ids, ins["image_grid_thw"], torch.ones_like(ids))
+    template = adapter = None
+    if isinstance(image, str):
+        from .text_context_adapter import TextContextTemplate, TextPairAdapter
+        if capture_qk:
+            raise ValueError("text pilot does not support the VLM QK capture backend")
+        tokenizer = getattr(processor, "tokenizer", processor)
+        template = TextContextTemplate(tokenizer, image)
+        adapter = TextPairAdapter()
+        ids = template.prefix_ids.to(device)
+        P = ids.shape[1]
+        pos = torch.arange(P, device=device)[None, :]
+        sp = {"visual": torch.empty(0, dtype=torch.long), "vis_end": -1}
+        modal = {}
+    else:
+        ins = vlm_inputs(processor, image, "x", device)
+        sp = token_spans(ins["input_ids"], model.config)
+        P = int(sp["vis_end"]) + 2
+        ids = ins["input_ids"][:, :P]
+        pos = mrope_position_ids(model, ids, ins["image_grid_thw"], torch.ones_like(ids))
+        modal = {k: ins[k] for k in ("pixel_values", "image_grid_thw")}
     _sync(device)
     input_seconds = time.perf_counter() - t_in
     t0 = time.perf_counter()
@@ -120,26 +141,30 @@ def prefill_context(model, processor, image, device, collect_dynamics=True, capt
     if capture_qk:
         from .attnstat import QKCapture
         cap = QKCapture()
-    ctxs = [c for c in (col, cap) if c is not None]
-    for c in ctxs:
-        c.__enter__()
-    try:
+    calls = []
+    with ExitStack() as stack:
+        handle = model.register_forward_pre_hook(lambda *_: calls.append(1))
+        stack.callback(handle.remove)
+        for c in (col, cap):
+            if c is not None:
+                stack.enter_context(c)
         out = model(input_ids=ids, position_ids=pos, attention_mask=torch.ones_like(ids),
-                    pixel_values=ins["pixel_values"], image_grid_thw=ins["image_grid_thw"],
-                    use_cache=True, output_attentions=False)
-    finally:
-        for c in reversed(ctxs):
-            c.__exit__(None, None, None)
+                    **modal, use_cache=True, output_attentions=False)
+    if len(calls) != 1:
+        raise RuntimeError(f"expected one context prefill, observed {len(calls)}")
     assert_finite_logits(out.logits, "context_only_prefill")
-    _sync(device)
-    prefill_seconds = time.perf_counter() - t0
     kv = tuple((k.detach(), v.detach()) for k, v in out.past_key_values.to_legacy_cache())
     del out
+    dynamics = col.result() if col is not None else None
+    _sync(device)
+    prefill_seconds = time.perf_counter() - t0
     return {"kv": kv, "prefix_ids": ids.detach().cpu(), "next_position": int(pos.max()) + 1,
             "spans": {"visual": sp["visual"].cpu(), "vis_end": int(sp["vis_end"]), "P": P},
-            "dynamics": col.result() if col is not None else None,
+            "dynamics": dynamics, "template": template, "adapter": adapter, "prefill_calls": len(calls),
             "qk": cap.qk if cap is not None else None,
-            "prefill_seconds": prefill_seconds, "input_seconds": input_seconds, "image_grid_thw": ins["image_grid_thw"]}
+            "prefill_seconds": prefill_seconds, "input_seconds": input_seconds,
+            "image_grid_thw": modal.get("image_grid_thw"),
+            "prefill_peak_bytes": int(torch.cuda.max_memory_allocated(device)) if cuda else 0}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -208,13 +233,13 @@ def build_memory(model, processor, pre: dict, context_id: str, method: str, keep
     n_pairs = n_layers * n_heads * T
     B = SEL.budget_pairs(keep_ratio, n_layers, n_heads, T)
     protected = SEL.protected_positions(pre["prefix_ids"], special_ids, n_prefix_protect)
-    if torch.cuda.is_available() and torch.device(device).type == "cuda":
-        torch.cuda.reset_peak_memory_stats(device)
     _sync(device); t0 = time.perf_counter()
     score, mapping, info = method_scores(method, pre, n_layers, n_heads, seed, extra_scores)
     _sync(device); t_score = time.perf_counter() - t0
     t1 = time.perf_counter()
     if method == "full":
+        if keep_ratio != 1.0:
+            raise ValueError("FULL requires keep_ratio=1.0")
         keep = torch.ones((n_layers, n_heads, T), dtype=torch.bool)
         B = n_pairs
     else:
@@ -232,9 +257,11 @@ def build_memory(model, processor, pre: dict, context_id: str, method: str, keep
     t_select = time.perf_counter() - t1
     t2 = time.perf_counter()
     cache = RaggedKVCache(kv, SEL.keep_ids_per_head(keep), device=device)
+    template = pre.get("template")
+    if template is None:
+        template = QwenImageTemplate(processor, int(model.config.image_token_id), pre["prefix_ids"])
+    mem = CompressedMemory(cache, template, pre["next_position"], T, pre.get("adapter"))
     _sync(device); t_prune = time.perf_counter() - t2
-    template = QwenImageTemplate(processor, int(model.config.image_token_id), pre["prefix_ids"])
-    mem = CompressedMemory(cache, template, pre["next_position"], T)
     peak = int(torch.cuda.max_memory_allocated(device)) if torch.device(device).type == "cuda" else 0
     dyn = pre["dynamics"]
     prot_pairs = int(protected.sum()) * n_layers * n_heads
@@ -244,25 +271,32 @@ def build_memory(model, processor, pre: dict, context_id: str, method: str, keep
         n_pairs_initial=n_pairs, n_pairs_kept=cache.pair_count, n_protected_pairs=prot_pairs,
         keep_ratio_actual=cache.pair_count / n_pairs, kv_bytes=cache.nbytes, metadata_bytes=mem.metadata_bytes,
         per_layer_counts=[int(keep[l].sum()) for l in range(n_layers)], selection_digest=SEL.selection_digest(keep),
-        prefill_calls=1, prefill_seconds=pre["prefill_seconds"], score_seconds=t_score, select_seconds=t_select,
+        prefill_calls=pre.get("prefill_calls", 1), prefill_seconds=pre["prefill_seconds"], score_seconds=t_score, select_seconds=t_select,
         prune_seconds=t_prune, build_seconds=pre["input_seconds"] + pre["prefill_seconds"] + t_score + t_select + t_prune,
         peak_bytes=peak, residual_max_rel_err=float(dyn.residual_max_rel_err.max()) if dyn is not None else None,
-        next_position=pre["next_position"], extra={"selector": selector, **info})
+        next_position=pre["next_position"], extra={"selector": selector,
+            "per_head_counts": cache.counts, "pair_bytes": cache.pair_bytes,
+            "prefill_peak_bytes": pre.get("prefill_peak_bytes", 0),
+            "peak_scope": "shared_evaluation_harness", "costs_valid_for_method": False, **info})
     return mem, rep, keep
 
 
 @torch.no_grad()
 def compress_context(model, processor, image, method: str, keep_ratio: float, seed: int, device,
-                     context_id: str = "", special_ids=(), **kw):
+                     context_id: str = "", special_ids=(), eps=1e-6, **kw):
     """배포 경로 계약: context 만 입력, prefill 1회, dense KV 는 압축 메모리 생성 직후 해제."""
     if method not in CONTEXT_ONLY_METHODS:
         raise ValueError(f"compress_context accepts context-only methods only, got {method}")
     needs_dyn = method not in ("full", "random", "recent", "k_norm", "v_norm")
-    pre = prefill_context(model, processor, image, device, collect_dynamics=needs_dyn)
+    started = time.perf_counter()
+    pre = prefill_context(model, processor, image, device, collect_dynamics=needs_dyn, eps=eps)
     mem, rep, _ = build_memory(model, processor, pre, context_id, method, keep_ratio, seed, device,
                                special_ids=special_ids, **kw)
-    del pre["kv"]; pre["kv"] = None
+    del pre
     _sync(device)
+    rep.build_seconds = time.perf_counter() - started
+    rep.peak_bytes = int(torch.cuda.max_memory_allocated(device)) if torch.device(device).type == "cuda" else 0
+    rep.extra.update(peak_scope="context_build", costs_valid_for_method=True)
     return mem, rep
 
 
@@ -278,6 +312,8 @@ def _ragged_forward(model, mem: CompressedMemory, ids: torch.Tensor, position: i
 @torch.no_grad()
 def answer_from_cache(model, branch: CompressedMemory, question: str, device, max_new_tokens: int = 32):
     """압축 context 뒤에 질문 suffix 를 먼저 처리한 뒤 greedy 생성. 첫 답 token 은 suffix 마지막 위치의 logits."""
+    if max_new_tokens < 1:
+        raise ValueError("max_new_tokens must be positive")
     suffix = branch.template.suffix(question, first=True)
     eos = branch.adapter.stop_token_ids(model)
     generated, stop = [], None
@@ -288,13 +324,14 @@ def answer_from_cache(model, branch: CompressedMemory, question: str, device, ma
         out, pos = _ragged_forward(model, branch, suffix, branch.next_position, device)
         _sync(device); t_query = time.perf_counter() - t0
         t1 = time.perf_counter()
-        for _ in range(max_new_tokens):
+        for step in range(max_new_tokens):
             tok = int(out.logits[0, -1].argmax())
             if tok in eos:
                 stop = tok
                 break
             generated.append(tok)
-            out, pos = _ragged_forward(model, branch, torch.tensor([[tok]]), pos, device)
+            if step + 1 < max_new_tokens:
+                out, pos = _ragged_forward(model, branch, torch.tensor([[tok]]), pos, device)
         _sync(device); t_decode = time.perf_counter() - t1
     del out
     peak = int(torch.cuda.max_memory_allocated(device)) if torch.device(device).type == "cuda" else 0
@@ -317,6 +354,8 @@ def answer_nll(model, branch: CompressedMemory, question: str, answer_text: str,
         out, _ = _ragged_forward(model, branch, ids, branch.next_position, device)
     logits = out.logits[0, suffix.shape[1] - 1: ids.shape[1] - 1].float()
     logp = torch.log_softmax(logits, dim=-1).gather(1, ans[0].to(logits.device)[:, None])[:, 0]
+    if not torch.isfinite(logp).all():
+        raise RuntimeError("nonfinite answer log-probabilities")
     del out
     return {"nll": float(-logp.mean()), "n_answer_tokens": int(ans.shape[1]), "token_logp": logp.cpu().tolist()}
 
@@ -324,16 +363,31 @@ def answer_nll(model, branch: CompressedMemory, question: str, answer_text: str,
 @torch.no_grad()
 def dense_reference_logits(model, processor, image, question: str, device, prefix_len_expected: int | None = None):
     """일반 FULL forward [context + question] 의 질문 suffix 구간 logits (parity 검사용, 평가 전용)."""
+    ins, P = dense_reference_inputs(model, processor, image, question, device)
+    if prefix_len_expected is not None and P != prefix_len_expected:
+        raise ValueError("dense reference prefix length disagrees with cached prefix")
+    out = model(**ins, use_cache=False)
+    pos = ins["position_ids"]
+    suffix_pos = pos[:, P:] if pos.ndim == 2 else pos[:, 0, P:]
+    return out.logits[0, P:].float(), ins["input_ids"][0, P:].cpu(), suffix_pos.cpu()
+
+
+def dense_reference_inputs(model, processor, image, question, device):
+    """Evaluation-only full inputs; never used by the compressed answering path."""
+    if isinstance(image, str):
+        from .text_context_adapter import dense_text_inputs, TextContextTemplate
+        tokenizer = getattr(processor, "tokenizer", processor)
+        ids = dense_text_inputs(tokenizer, image, question).to(device)
+        P = TextContextTemplate(tokenizer, image).prefix_ids.shape[1]
+        return {"input_ids": ids, "position_ids": torch.arange(ids.shape[1], device=device)[None],
+                "attention_mask": torch.ones_like(ids)}, P
     ins = vlm_inputs(processor, image, question, device)
     sp = token_spans(ins["input_ids"], model.config)
     P = int(sp["vis_end"]) + 2
-    if prefix_len_expected is not None and P != prefix_len_expected:
-        raise ValueError("dense reference prefix length disagrees with cached prefix")
     ids = ins["input_ids"]
     pos = mrope_position_ids(model, ids, ins["image_grid_thw"], torch.ones_like(ids))
-    out = model(input_ids=ids, position_ids=pos, attention_mask=torch.ones_like(ids),
-                pixel_values=ins["pixel_values"], image_grid_thw=ins["image_grid_thw"], use_cache=False)
-    return out.logits[0, P:].float(), ids[0, P:].cpu(), pos[:, 0, P:].cpu()
+    return {"input_ids": ids, "position_ids": pos, "attention_mask": torch.ones_like(ids),
+            "pixel_values": ins["pixel_values"], "image_grid_thw": ins["image_grid_thw"]}, P
 
 
 def report_dict(rep: BuildReport) -> dict:

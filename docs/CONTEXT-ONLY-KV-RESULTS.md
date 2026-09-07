@@ -18,6 +18,8 @@
 | 보호 special token | tokenizer special id 전부 | 이미지/비디오 placeholder 제외 | placeholder(1,222개)를 보호하면 보호 쌍이 예산을 넘어 실행 불가. 기록에 남김 |
 | 그 외 | — | 명세대로 | 단일 prefill, (layer, KV head, token) 쌍 단위 실제 삭제, 전역 top-B, seed 동점 처리, 독립 분기 평가, 비용 회계 |
 
+**2026-09-07 리뷰(다른 세션)에서 지적된 5건과 처리**: ① profile peak 가 prefill 구간을 놓침 → 초기화 시점 수정·재측정(§7). ② 수집기 기본 허용오차 없음, parity 미거부 → 둘 다 실패하도록 변경(§3). ③ 분석기가 다른 dtype·eps 로그를 병합, 누락 허용 → metadata·완결성 검증 추가(품질 수치 불변 확인). ④ 출력 덮어쓰기·설정 불일치 resume → `--overwrite` 없이는 거부, resume 시 run metadata 일치 검사. ⑤ `d_shift_prev` 가 실제 한 층 이동이 아니었음 → mapping 수정(첫 두 층 0, 이후 D[l−2]); sweep·deletion 에는 이 mapping 이 쓰이지 않아 결과 표는 영향 없음.
+
 ## 2. 구현 (모두 CPU 단위 테스트 포함, 전체 264개 통과)
 
 | 파일 | 내용 |
@@ -45,6 +47,8 @@
 | logits 최대 절대 오차 / 평균 | 0.08~0.33 / 0.010~0.017 |
 
 logits 오차는 fp16 에서 ragged backend(FP32 softmax, head 별 계산)와 eager attention 의 계산 순서 차이다. 질문 순서 불변·master 불변·분기 독립은 단위 테스트로 확인.
+
+**리뷰 반영 (2026-09-07)**: parity 는 기록만 하는 것이 아니라 허용오차를 넘으면 실행이 실패하도록 바꿨다 (위치 일치, 첫 답 token 일치, argmax 일치율 ≥ 0.9, NLL 차 ≤ 0.02; `--parity-argmax-min`, `--parity-nll-tol`). 재실행 결과 16/16 `status=ok`. 수집기도 기본 허용오차(fp16 2e-3, bf16 2e-2, fp32 1e-5)를 넘으면 실패한다.
 
 ## 4. 단계 2 — 관측 (단일 prefill 통계)
 
@@ -117,19 +121,23 @@ FULL-correct 보존율도 같다: 20% 유지에서 무작위 0.720, D 0.288, MLP
 
 ## 7. 비용 (단계 5 profile, 개발 20장, 배포 경로 `compress_context`: dense 해제, 다른 방법 동반 실행 없음)
 
-| 방법 | prefill s (통계 수집 포함) | scorer overhead s (plain 대비) | score+select+prune s | build 총 s | 초기 peak GB (모델 제외) | persistent MB (KV+ID+template) | 질문 prefill s | decode s / token | 정답률 (20장) |
-|---|---|---|---|---|---|---|---|---|---|
-| plain (FULL, 통계 없음) | 0.959 | — | 0.060 | 1.071 | 0.15 | 68.8 | 0.099 | 0.088 | 0.800 |
-| D (20%) | 0.994 | +0.035 | 0.064 | 1.117 | 0.10 | 13.8 | 0.099 | 0.089 | 0.350 |
-| R (20%) | 0.992 | +0.033 | 0.065 | 1.112 | 0.10 | 13.8 | 0.097 | 0.087 | 0.217 |
-| MLP norm (20%) | 0.998 | +0.038 | 0.056 | 1.108 | 0.10 | 13.8 | 0.095 | 0.084 | 0.233 |
-| K norm (20%) | 0.955 | −0.004 | 0.065 | 1.074 | 0.10 | 13.8 | 0.100 | 0.085 | 0.117 |
+**재측정 (2026-09-07 리뷰 반영)**: 처음 보고한 peak(0.10~0.15 GB)는 prefill 이 끝난 뒤 peak 통계를 다시 초기화해 prefill 구간을
+놓친 값이었다. 초기화를 build 시작 시점 한 번으로 옮기고 다시 잰 값이 아래다. 시간 수치는 재측정 전후 같다.
 
-- 통계 수집(hook, FP32 norm, 층마다 `.cpu()`)의 추가 비용은 prefill 당 약 0.035 s (3.7%). 선택+삭제 복사는 0.06 s. 즉 "압축 준비 비용이 낮다"는 명세의 전제는 성립한다 — 성능이 성립하지 않을 뿐이다.
-- 재구성 방식의 준비 비용은 같은 화면에서 +10.3 s (설명문 87 token 생성 + forward 1회; §6). 비용 비율 약 300배.
+| 방법 | prefill s (통계 수집 포함) | scorer overhead s (plain 대비) | score+select+prune s | build 총 s | build peak GB (모델 15.5 GB 제외) | persistent MB (KV+ID+template) | 질문 prefill s | decode s / token | 정답률 (20장) |
+|---|---|---|---|---|---|---|---|---|---|
+| plain (FULL, 통계 없음) | 0.960 | — | 0.069 | 1.080 | 1.32 | 68.8 | 0.098 | 0.087 | 0.800 |
+| D (20%) | 1.007 | +0.047 | 0.049 | 1.107 | 1.32 | 13.8 | 0.099 | 0.085 | 0.350 |
+| R (20%) | 1.019 | +0.059 | 0.051 | 1.126 | 1.32 | 13.8 | 0.097 | 0.087 | 0.217 |
+| MLP norm (20%) | 1.009 | +0.050 | 0.046 | 1.106 | 1.32 | 13.8 | 0.095 | 0.084 | 0.233 |
+| K norm (20%) | 0.970 | +0.010 | 0.050 | 1.072 | 1.32 | 13.8 | 0.098 | 0.086 | 0.117 |
+
+- 통계 수집(hook, FP32 norm, 층마다 `.cpu()`)의 추가 비용은 prefill 당 약 0.05 s (5%). 선택+삭제 복사는 0.05 s. "압축 준비 비용이 낮다"는 명세의 전제는 성립한다 — 성능이 성립하지 않을 뿐이다.
+- build peak 는 방법과 무관하게 1.32 GB 로 같다. prefill 활성값(vision encoder 포함)과 dense KV(68.8 MB)가 지배하고, 점수·선택의 임시 tensor 는 그보다 작다. 즉 명세 §1.2 의 "삭제 설계는 초기 peak 를 제거하지 않는다"가 수치로 확인된다.
+- 재구성 방식의 준비 비용은 같은 화면에서 +10.3 s (설명문 87 token 생성 + forward 1회; §6). 비용 비율 약 200배.
 - persistent bytes 는 68.8 MB → 13.8 MB (정확히 20% + 생존 ID 8 B/쌍 + template). CUDA timing 은 synchronize 후 perf_counter.
 - decode 시간이 FULL 과 20% 에서 같은 것은 Python head-loop ragged backend 때문이며 속도 향상 주장이 아니다 (명세 §8.2).
-- 초기 peak 는 모델 상주분(15.5 GB) 을 뺀 값이며 vision encoder 활성값과 dense KV(68.8 MB)를 포함한다.
+- plain 행은 `peak_scope=shared_evaluation_harness` 로 표기된다(통계 없는 prefill + full build). 나머지는 `context_build`(dense 해제 후 측정).
 
 ## 8. 판정 (명세 §1.2 기준)
 

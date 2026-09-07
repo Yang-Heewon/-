@@ -4,7 +4,8 @@
 점수 텐서는 항상 (L, H, T). token 신호 (L, T) 또는 (L-1, T) 를 쌍 점수로 바꾸는 규칙은 이름으로 고정한다:
     mlp_norm_same / r_same / hidden_rel_same / hidden_cos_same / r_std_same : score[l,h,i] = signal[l,i] (head 공통)
     d_same_zero0 : score[0,h,i] = 0, score[l,h,i] = D[l-1,i]  (l>=1)   — 문서 기본
-    d_shift_prev : score[l,h,i] = D[l-1,i] (l>=1), score[0] = D[0]      — 기존 shift 방식 (ablation)
+    d_shift_prev : score[0:2,h,i] = 0, score[l,h,i] = D[l-2,i] (l>=2)
+                   — same-layer D proxy를 한 layer 늦춤; 마지막 D 관측은 사용하지 않음
 선택: 보호 쌍은 항상 포함(예산에 포함), 나머지는 전역 top-(B−보호). 동점은 seed 순열로 해소.
 """
 from __future__ import annotations
@@ -18,7 +19,17 @@ TOKEN_MAPPINGS = ("mlp_norm_same", "r_same", "hidden_rel_same", "hidden_cos_same
 
 
 def map_token_signal(signal: torch.Tensor, mapping: str, n_layers: int, n_heads: int) -> torch.Tensor:
+    for value, name in ((n_layers, "n_layers"), (n_heads, "n_heads")):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"{name} must be a positive integer")
+    if mapping not in TOKEN_MAPPINGS:
+        raise ValueError(f"unknown mapping {mapping}")
     signal = torch.as_tensor(signal).float()
+    expected_ndim = 1 if mapping == "r_std_same" else 2
+    if signal.ndim != expected_ndim or signal.shape[-1] < 1:
+        raise ValueError(f"{mapping} expects a nonempty {'(T,)' if expected_ndim == 1 else '2D'} signal")
+    if not torch.isfinite(signal).all():
+        raise ValueError("signal must contain finite values")
     if mapping in ("mlp_norm_same", "r_same", "hidden_rel_same", "hidden_cos_same"):
         if signal.shape[0] != n_layers:
             raise ValueError(f"{mapping} expects an (L, T) signal")
@@ -28,10 +39,14 @@ def map_token_signal(signal: torch.Tensor, mapping: str, n_layers: int, n_heads:
             raise ValueError("r_std_same expects a (T,) per-token standard deviation")
         return signal[None, None, :].expand(n_layers, n_heads, -1).clone()
     if mapping in ("d_same_zero0", "d_shift_prev"):
+        if n_layers < 2:
+            raise ValueError("D mappings require at least two layers")
         if signal.shape[0] != n_layers - 1:
             raise ValueError(f"{mapping} expects an (L-1, T) signal")
-        first = torch.zeros_like(signal[:1]) if mapping == "d_same_zero0" else signal[:1]
-        full = torch.cat([first, signal], dim=0)
+        zero = torch.zeros_like(signal[:1])
+        full = torch.cat([zero, signal], dim=0)
+        if mapping == "d_shift_prev":
+            full = torch.cat([zero, full[:-1]], dim=0)
         return full[:, None, :].expand(n_layers, n_heads, -1).clone()
     raise ValueError(f"unknown mapping {mapping}")
 
@@ -91,7 +106,9 @@ def select_pairs(score: torch.Tensor, protected: torch.Tensor, budget: int, seed
     if n_free:
         if not torch.isfinite(score[eligible]).all():
             raise ValueError("nonfinite scores among eligible pairs")
-        tie = _tie_permutation(score.shape, seed).float()
+        # Preserve exact ordering even when pair ranks exceed FP32's 2**24
+        # consecutive-integer range.
+        tie = _tie_permutation(score.shape, seed)
         # 1차: 점수 내림차순, 2차: seed 순열 (동점 해소) — 안정 정렬 두 번
         flat_s, flat_t = score.flatten(), tie.flatten()
         idx = torch.nonzero(eligible.flatten(), as_tuple=True)[0]
@@ -145,6 +162,7 @@ def boundary_control_select(score, protected, budget, seed, boundary_seed):
 
 def shuffled_D(R: torch.Tensor, seed: int):
     """층 순서를 고정 seed 순열 pi 로 섞은 뒤 D_shuffle[l-1] = |R[pi[l]] − R[pi[l-1]]|. (수집한 R 의 행만 섞음)"""
+    _validate_R(R)
     L = R.shape[0]
     pi = torch.randperm(L, generator=torch.Generator().manual_seed(int(seed)))
     Rs = R[pi]
@@ -153,6 +171,7 @@ def shuffled_D(R: torch.Tensor, seed: int):
 
 def anchor_D(R: torch.Tensor, seed: int):
     """anchor 층 l 을 유지하고 비교 층 j_l != l 을 고정 seed 로 뽑아 |R[l] − R[j_l]|, l = 1..L-1 (layer 0 경계 동일)."""
+    _validate_R(R)
     L = R.shape[0]
     g = torch.Generator().manual_seed(int(seed))
     js = []
@@ -162,6 +181,13 @@ def anchor_D(R: torch.Tensor, seed: int):
         js.append(j)
     D = torch.stack([(R[l] - R[js[l - 1]]).abs() for l in range(1, L)])
     return D, js
+
+
+def _validate_R(R: torch.Tensor):
+    if not isinstance(R, torch.Tensor) or R.ndim != 2 or R.shape[0] < 2 or R.shape[1] < 1:
+        raise ValueError("R must be (L, T) with L >= 2 and T >= 1")
+    if not torch.isfinite(R).all():
+        raise ValueError("R must contain finite values")
 
 
 def average_rank(x: torch.Tensor) -> torch.Tensor:

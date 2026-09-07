@@ -20,6 +20,7 @@ stats 모드에서는 d 차원을 hook 안에서 즉시 축약하고 raw activat
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 
 import torch
 
@@ -59,6 +60,11 @@ class MLPDynamicsCollector:
     def __init__(self, model, mode="stats", eps=1e-6, rel_tol=None):
         if mode not in ("stats", "debug"):
             raise ValueError("mode must be 'stats' or 'debug'")
+        if isinstance(eps, bool) or not isinstance(eps, (int, float)) or not math.isfinite(eps) or eps <= 0:
+            raise ValueError("eps must be finite and positive")
+        if rel_tol is not None and (isinstance(rel_tol, bool) or not isinstance(rel_tol, (int, float))
+                                    or not math.isfinite(rel_tol) or rel_tol <= 0):
+            raise ValueError("rel_tol must be finite and positive")
         self.layers = language_layers(model)
         if not len(self.layers):
             raise ValueError("no decoder layers found")
@@ -79,8 +85,10 @@ class MLPDynamicsCollector:
     # ---- hooks -------------------------------------------------------------------------
     def _layer_pre(self, li, module, args, kwargs):
         h = args[0] if args else kwargs["hidden_states"]
-        if h.ndim != 3 or h.shape[0] != 1:
+        if h.ndim != 3 or h.shape[0] != 1 or not h.shape[1] or not h.shape[2]:
             raise ValueError("collector requires batch-one (1, T, d) hidden states")
+        if not h.is_floating_point():
+            raise ValueError("hidden states must be floating-point tensors")
         n = self.calls.get(li, 0)
         if n:
             raise RuntimeError(f"decoder layer {li} was called {n+1} times in one collection; call reset() between forwards")
@@ -102,13 +110,20 @@ class MLPDynamicsCollector:
     def _layer_post(self, li, module, args, out):
         x_next = (out[0] if isinstance(out, (tuple, list)) else out)[0]
         x, r, m = self._x.pop(li), self._r.pop(li), self._m.pop(li)
+        if any(t.shape != x.shape for t in (r, m, x_next)):
+            raise ValueError("residual and MLP tensors must share (T, d) shape")
         rf, mf, xf, xnf = r.float(), m.float(), x.float(), x_next.float()
         recon = rf + mf
         diff = (xnf - recon).abs().amax(dim=-1)                       # (T,)
         self.abs_err[li] = float(diff.max())
         self.rel_err[li] = float((diff / (xnf.abs().amax(dim=-1) + self.eps)).max())
-        if self.rel_tol is not None and self.rel_err[li] > self.rel_tol:
-            raise RuntimeError(f"layer {li}: x_next != r + m (rel err {self.rel_err[li]:.3e} > {self.rel_tol})")
+        # Addition in low precision may round before the FP32 reconstruction.
+        # None chooses a dtype-aware threshold; it must not disable validation.
+        tolerance = self.rel_tol if self.rel_tol is not None else {
+            torch.float16: 2e-3, torch.bfloat16: 2e-2,
+        }.get(x.dtype, 1e-5)
+        if not math.isfinite(self.rel_err[li]) or self.rel_err[li] > tolerance:
+            raise RuntimeError(f"layer {li}: x_next != r + m (rel err {self.rel_err[li]:.3e} > {tolerance})")
         self.mlp_norm[li] = mf.norm(dim=-1).cpu()
         self.res_norm[li] = rf.norm(dim=-1).cpu()
         self.hidden_rel[li] = ((xnf - xf).norm(dim=-1) / (xf.norm(dim=-1) + self.eps)).cpu()
@@ -171,9 +186,13 @@ class MLPDynamicsCollector:
 
 def d_topk_mean(D: torch.Tensor, k: int) -> torch.Tensor:
     """token 별 D 상위 min(k, L-1) 평균. D: (L-1, T) → (T,)"""
-    if D.ndim != 2 or D.shape[0] < 1:
+    if D.ndim != 2 or D.shape[0] < 1 or D.shape[1] < 1:
         raise ValueError("D must be (L-1, T) with L >= 2")
-    k = min(int(k), D.shape[0])
+    if isinstance(k, bool) or not isinstance(k, int) or k < 1:
+        raise ValueError("k must be a positive integer")
+    if not torch.isfinite(D).all():
+        raise ValueError("D must contain finite values")
+    k = min(k, D.shape[0])
     return D.topk(k, dim=0).values.mean(0)
 
 

@@ -27,6 +27,14 @@ def run(model, ids, collector=None):
 
 
 class CollectorTest(unittest.TestCase):
+    def test_invalid_eps_and_tolerance_rejected(self):
+        model = tiny(2)
+        for invalid in (0, -1e-6, float("nan"), float("inf"), -float("inf"), True):
+            with self.subTest(eps=invalid), self.assertRaises(ValueError):
+                MLPDynamicsCollector(model, eps=invalid)
+            with self.subTest(rel_tol=invalid), self.assertRaises(ValueError):
+                MLPDynamicsCollector(model, rel_tol=invalid)
+
     @torch.no_grad()
     def test_shapes_finite_and_residual_identity(self):
         model = tiny(3)
@@ -68,6 +76,42 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(len(col.handles), 0)
 
     @torch.no_grad()
+    def test_default_tolerance_rejects_corrupted_layer_output(self):
+        model = tiny(2)
+        col = MLPDynamicsCollector(model)
+        # Run before the collector's layer-output hook, leaving the captured
+        # r/m untouched. This violates the sequential residual identity.
+        corrupt = model.layers[0].register_forward_hook(
+            lambda module, args, out: (out[0] + 0.25, *out[1:]))
+        try:
+            with self.assertRaisesRegex(RuntimeError, "x_next != r \\+ m"):
+                run(model, torch.tensor([[4, 5, 6]]), col)
+            self.assertEqual(len(col.handles), 0)
+        finally:
+            corrupt.remove()
+        for layer in model.layers:
+            self.assertFalse(layer._forward_hooks)
+            self.assertFalse(layer._forward_pre_hooks)
+            self.assertFalse(layer.mlp._forward_hooks)
+            self.assertFalse(layer.post_attention_layernorm._forward_pre_hooks)
+
+    @torch.no_grad()
+    def test_default_tolerance_handles_low_precision_addition(self):
+        model = tiny(2)
+        for dtype in (torch.float32, torch.float16, torch.bfloat16):
+            with self.subTest(dtype=dtype):
+                col = MLPDynamicsCollector(model)
+                r = torch.full((3, 8), 1.0, dtype=dtype)
+                m = torch.full_like(r, 0.13)
+                col._x[0], col._r[0], col._m[0] = r, r, m
+                col._layer_post(0, model.layers[0], (), ((r + m)[None],))
+                self.assertTrue(torch.isfinite(col.mlp_norm[0]).all())
+                # A material residual mismatch must fail for every dtype.
+                col._x[0], col._r[0], col._m[0] = r, r, m
+                with self.assertRaisesRegex(RuntimeError, "x_next != r \\+ m"):
+                    col._layer_post(0, model.layers[0], (), ((r + m + 0.25)[None],))
+
+    @torch.no_grad()
     def test_double_forward_without_reset_fails_and_hooks_removed_on_error(self):
         model = tiny(2)
         ids = torch.tensor([[4, 5]])
@@ -94,6 +138,15 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(int((D[:, 0] > 0).sum()), 0)
         torch.testing.assert_close(d_topk_mean(D, 3)[1], torch.tensor(8.0 / 3))
         self.assertEqual(d_topk_mean(D, 10).shape, (3,))
+
+    def test_topk_rejects_invalid_shape_count_and_nonfinite_values(self):
+        for invalid in (0, -1, True, 1.5):
+            with self.subTest(k=invalid), self.assertRaises(ValueError):
+                d_topk_mean(torch.ones(2, 3), invalid)
+        for invalid in (torch.ones(3), torch.empty(0, 3), torch.empty(2, 0),
+                        torch.tensor([[float("nan")]])):
+            with self.subTest(shape=invalid.shape), self.assertRaises(ValueError):
+                d_topk_mean(invalid, 1)
 
     @torch.no_grad()
     def test_token_table(self):

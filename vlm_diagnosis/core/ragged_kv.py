@@ -11,6 +11,7 @@ import threading
 
 import torch
 from transformers.cache_utils import Cache
+import transformers.models.qwen2.modeling_qwen2 as _q2
 import transformers.models.qwen2_5_vl.modeling_qwen2_5_vl as _q25
 import transformers.models.qwen3_vl.modeling_qwen3_vl as _q3
 
@@ -155,8 +156,8 @@ class RaggedAttention:
         if len(self.modules) != cache.n_layers:
             raise ValueError("model and ragged cache have different layer counts")
         for li, module in enumerate(self.modules):
-            if not isinstance(module, (_q25.Qwen2_5_VLAttention, _q3.Qwen3VLTextAttention)):
-                raise TypeError("ragged backend only supports tested Qwen2.5/3 decoder attention")
+            if not isinstance(module, (_q2.Qwen2Attention, _q25.Qwen2_5_VLAttention, _q3.Qwen3VLTextAttention)):
+                raise TypeError("ragged backend only supports tested Qwen2 text and Qwen2.5/3 VL decoder attention")
             if module.layer_idx != li or module.config._attn_implementation != "eager" or module.training:
                 raise ValueError("ragged backend requires ordered, eval-mode eager decoder layers")
             if getattr(module, "sliding_window", None):
@@ -206,19 +207,21 @@ class RaggedAttention:
         if self.cache.backend_active:
             _PATCH_LOCK.release()
             raise RuntimeError("ragged cache is already active")
-        self.originals = (_q25.eager_attention_forward, _q3.eager_attention_forward)
+        self.originals = (_q2.eager_attention_forward, _q25.eager_attention_forward, _q3.eager_attention_forward)
         def wrap(original):
             def forward(module, query, key, value, attention_mask, scaling, dropout=0., **kw):
                 if id(module) in self.lookup:
                     return self._attention(module, query, key, value, attention_mask, scaling, dropout, **kw)
                 return original(module, query, key, value, attention_mask, scaling, dropout, **kw)
             return forward
-        _q25.eager_attention_forward, _q3.eager_attention_forward = map(wrap, self.originals)
+        (_q2.eager_attention_forward, _q25.eager_attention_forward,
+         _q3.eager_attention_forward) = map(wrap, self.originals)
         self.cache.backend_active = True
         return self
 
     def __exit__(self, *exc):
-        _q25.eager_attention_forward, _q3.eager_attention_forward = self.originals
+        (_q2.eager_attention_forward, _q25.eager_attention_forward,
+         _q3.eager_attention_forward) = self.originals
         self.cache.backend_active = False
         self.cache.query_ids = None
         _PATCH_LOCK.release()

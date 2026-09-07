@@ -8,55 +8,333 @@
 """
 import argparse
 import glob
+import hashlib
 import json
+import math
 import os
 import random
+import re
 from collections import defaultdict
 
 ROOT = os.path.join(os.path.dirname(__file__), "..", "..")
 FULL = "full|none|none|k1|s0"
+SCHEMAS = {"context_only_v1", "context_only_v2"}
+STAGES = {"full", "probe", "deletion", "sweep", "profile"}
+_META_FIELDS = ("schema_version", "stage", "model", "model_id", "code_revision", "code_dirty",
+                "transformers", "torch", "dtype", "attn_backend", "manifest", "manifest_sha256",
+                "split", "dev_contexts", "n_contexts", "shard", "nshards", "keep_ratios", "methods",
+                "random_seeds", "eps", "protect", "protected_special_ids", "granularity", "storage",
+                "budget_rule", "tie_rule", "nll_rule", "questions", "brief", "max_new_tokens", "decode")
+# Everything else is compared too, including newly added model/tokenizer revision,
+# source fingerprints, precision/backend options and profiling methodology.
+_RUN_LOCAL = {"record_type", "run_id", "started_at", "device", "n_contexts", "shard", "nshards",
+              "expected_conditions", "expected_question_ids_by_context", "expected_context_ids"}
 
 
 class LogError(Exception):
     pass
 
 
+def _fail(message):
+    raise LogError(message)
+
+
+def _id(value, name):
+    if isinstance(value, bool) or not isinstance(value, (str, int)) or not str(value).strip():
+        _fail(f"invalid {name}: {value!r}")
+    return str(value)
+
+
+def _integer(value, name, minimum=0):
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        _fail(f"invalid {name}: {value!r}")
+    return value
+
+
+def _number(value, name, minimum=0):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < minimum:
+        _fail(f"invalid {name}: {value!r}")
+    return value
+
+
+def _unique(values, name, allow_empty=False):
+    if not isinstance(values, list) or (not values and not allow_empty):
+        _fail(f"{name} must be a {'possibly empty ' if allow_empty else 'nonempty '}list")
+    normalized = [_id(v, name) for v in values]
+    if len(set(normalized)) != len(normalized):
+        _fail(f"duplicate {name}")
+    return normalized
+
+
+def _metadata(r):
+    _id(r.get("run_id"), "run_id")
+    for key in _META_FIELDS:
+        if key not in r:
+            _fail(f"run metadata missing {key}")
+    if r["schema_version"] not in SCHEMAS:
+        _fail(f"unsupported schema_version {r['schema_version']!r}")
+    if r["stage"] not in STAGES or r["split"] not in {"dev", "eval", "all"}:
+        _fail("invalid stage/split in run metadata")
+    for key in ("model", "model_id", "code_revision", "transformers", "torch", "dtype", "attn_backend",
+                "manifest", "manifest_sha256", "protect", "granularity", "storage", "budget_rule", "tie_rule",
+                "nll_rule", "questions", "decode"):
+        if not isinstance(r[key], str) or not r[key].strip():
+            _fail(f"run metadata {key} must be nonempty text")
+    if not isinstance(r["brief"], str) or not isinstance(r["code_dirty"], bool):
+        _fail("invalid brief/code_dirty metadata")
+    for key, minimum in (("n_contexts", 1), ("nshards", 1), ("shard", 0), ("dev_contexts", 0), ("max_new_tokens", 1)):
+        _integer(r[key], key, minimum)
+    if r["shard"] >= r["nshards"]:
+        _fail("shard must be smaller than nshards")
+    if _number(r["eps"], "eps") == 0:
+        _fail("eps must be positive")
+    for key in ("methods", "random_seeds"):
+        _unique(r[key], key)
+    if not isinstance(r["keep_ratios"], list) or not r["keep_ratios"]:
+        _fail("keep_ratios must be a nonempty list")
+    for ratio in r["keep_ratios"]:
+        if not 0 < _number(ratio, "keep ratio") <= 1:
+            _fail("keep ratio outside (0,1]")
+    if len(set(r["keep_ratios"])) != len(r["keep_ratios"]):
+        _fail("duplicate keep_ratios")
+    for seed in r["random_seeds"]:
+        _integer(seed, "random seed")
+    _unique(r["protected_special_ids"], "protected_special_ids", allow_empty=True)
+    if r["schema_version"] == "context_only_v2":
+        for key in ("model_revision", "tokenizer_revision", "implementation_sha256"):
+            if not isinstance(r.get(key), str) or not r[key].strip():
+                _fail(f"v2 metadata requires nonempty {key}")
+        tolerances = r.get("parity_tolerances")
+        if not isinstance(tolerances, dict) or not tolerances:
+            _fail("v2 metadata requires parity_tolerances")
+        for key, value in tolerances.items():
+            _number(value, f"parity_tolerances.{key}")
+        _integer(r.get("question_start"), "question_start")
+        _integer(r.get("questions_per_context"), "questions_per_context", 1)
+        if r["stage"] == "profile":
+            _integer(r.get("profile_repeats"), "profile_repeats", 1)
+            _integer(r.get("profile_warmup"), "profile_warmup")
+            if r.get("profile_isolated") is not True:
+                _fail("v2 profile must be isolated")
+        conditions = _unique(r.get("expected_conditions"), "expected_conditions", allow_empty=r["stage"] == "probe")
+        for condition in conditions:
+            parse_cond(condition)
+        qmap = r.get("expected_question_ids_by_context")
+        if not isinstance(qmap, dict) or len(qmap) != r["n_contexts"]:
+            _fail("expected_question_ids_by_context must enumerate all declared contexts")
+        for cid, qids in qmap.items():
+            _id(cid, "context_id")
+            _unique(qids, "expected question IDs", allow_empty=r["stage"] == "probe")
+        if r["stage"] in {"full", "deletion", "sweep"} and FULL not in conditions:
+            _fail("expected_conditions is missing FULL")
+        if r["stage"] == "probe" and conditions:
+            _fail("probe must not declare answer conditions")
+        if r["stage"] == "full" and conditions != [FULL]:
+            _fail("full stage requires exactly the FULL condition")
+
+
+def _signature(r):
+    ignored = _RUN_LOCAL | ({"profile_method"} if r["stage"] == "profile" else set())
+    return {key: value for key, value in r.items() if key not in ignored}
+
+
+def _legacy_conditions(r, records):
+    stage = r["stage"]
+    if stage == "probe":
+        return []
+    if stage == "full":
+        return [FULL]
+    if stage == "profile":
+        # v1 omitted profile_method from metadata. It is not recoverable beyond
+        # the actual build condition, so this path is explicitly legacy/unverified.
+        conditions = {x["condition"] for x in records if x["record_type"] == "build"}
+        if len(conditions) != 1:
+            _fail("legacy profile run must have exactly one build condition")
+        return sorted(conditions)
+    def cond(m, d, s, k, seed=0):
+        return f"{m}|{d}|{s}|k{k:g}|s{seed}"
+    result = [FULL]
+    if stage == "sweep":
+        result += [cond(m, "keep_high", "global", k) for k in r["keep_ratios"] for m in r["methods"]]
+    else:
+        k = max(r["keep_ratios"])
+        result += [cond("random", "keep_high", "global", k, seed) for seed in r["random_seeds"]]
+        result.append(cond("recent", "keep_high", "global", k))
+        signals = ("mlp_norm", "r", "d", "k_norm", "v_norm", "r_std", "hidden_rel", "hidden_cos", "d_shuffle", "d_anchor")
+        result += [cond(m, d, "global", k) for m in signals for d in ("keep_high", "keep_low")]
+        result += [cond(m, "keep_high", "layer_matched", k) for m in ("mlp_norm", "r", "d", "random")]
+        result += [cond(m, "keep_high", "boundary", k) for m in ("d", "random")]
+    if len(result) != len(set(result)):
+        _fail("duplicate conditions implied by legacy metadata")
+    return result
+
+
+def _legacy_questions(r, contexts):
+    """v1 did not log question IDs: only recover from its hash-verified manifest."""
+    path = os.path.join(ROOT, r["manifest"])
+    try:
+        with open(path, "rb") as handle:
+            payload = handle.read()
+    except OSError as exc:
+        raise LogError("legacy completeness requires the original manifest") from exc
+    if hashlib.sha256(payload).hexdigest() != r["manifest_sha256"]:
+        _fail("legacy manifest SHA256 mismatch")
+    match = re.fullmatch(r"manifest questions\[1:1\+(\d+)\] \+ BRIEF", r["questions"])
+    if not match:
+        _fail("unsupported legacy question selection rule")
+    n = int(match[1])
+    if r["stage"] == "full":
+        n = min(n, 2)
+    try:
+        entries = [json.loads(line) for line in payload.splitlines() if line.strip()]
+        if r["split"] == "dev":
+            entries = entries[:r["dev_contexts"]]
+        elif r["split"] == "eval":
+            entries = entries[r["dev_contexts"]:]
+        entries = entries[r["shard"]::r["nshards"]]
+        mapping = {}
+        for item in entries:
+            cid = _id(item["sample_id"], "manifest context_id")
+            if cid in mapping:
+                _fail("duplicate context ID in legacy manifest")
+            mapping[cid] = [] if r["stage"] == "probe" else [
+                _id(q["question_id"], "manifest question_id") for q in item["questions"][1:1+n]]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise LogError("malformed legacy manifest") from exc
+    if not contexts <= mapping.keys():
+        _fail("record context outside declared legacy split/shard")
+    if r["stage"] != "probe" and any(not mapping[cid] for cid in contexts):
+        _fail("legacy context has no evaluation questions")
+    return {cid: mapping[cid] for cid in contexts}
+
+
+def _validate_answer(r):
+    if r.get("status") != "ok":
+        _fail("answer status is not ok")
+    if _number(r.get("em"), "EM") not in (0, 1):
+        _fail("EM must be 0 or 1")
+    _integer(r.get("generated_tokens"), "generated_tokens")
+    n = _integer(r.get("n_answer_tokens"), "n_answer_tokens")
+    if r.get("nll") is None:
+        if n != 0:
+            _fail("null NLL must have zero answer tokens")
+    else:
+        _number(r["nll"], "NLL")
+        if n < 1:
+            _fail("NLL requires positive answer token count")
+    if not isinstance(r.get("prediction"), str) or not isinstance(r.get("gold"), list) or not r["gold"]:
+        _fail("answer requires prediction and gold")
+    if r.get("loyalty") is not None and _number(r["loyalty"], "loyalty") not in (0, 1):
+        _fail("loyalty must be 0 or 1")
+
+
+def _complete(r, records):
+    contexts = {x["context_id"] for x in records}
+    if len(contexts) != r["n_contexts"]:
+        _fail(f"incomplete run {r['run_id']}: expected {r['n_contexts']} contexts, got {len(contexts)}")
+    conditions = r.get("expected_conditions") if r["schema_version"] == "context_only_v2" else _legacy_conditions(r, records)
+    qmap = ({str(cid): [_id(q, "question_id") for q in qs] for cid, qs in r["expected_question_ids_by_context"].items()}
+            if r["schema_version"] == "context_only_v2" else _legacy_questions(r, contexts))
+    if contexts != set(qmap):
+        _fail("records do not match declared context IDs")
+    for cid in contexts:
+        rows = [x for x in records if x["context_id"] == cid]
+        by = defaultdict(list)
+        for row in rows:
+            by[row["record_type"]].append(row)
+        if len(by["context_done"]) != 1 or rows[-1]["record_type"] != "context_done":
+            _fail(f"incomplete context {cid}: missing/followed context_done")
+        stage = r["stage"]
+        expected_types = {"context_done", "diagnostic"} if stage == "probe" else {"context_done", "build"}
+        expected_types |= {"parity"} if stage == "full" else ({"answer"} if stage != "probe" else set())
+        if stage in {"deletion", "sweep"}:
+            expected_types.add("diagnostic")
+        if set(by) != expected_types:
+            _fail(f"incomplete/invalid record types for {stage} context {cid}: {set(by)}")
+        if "diagnostic" in expected_types and len(by["diagnostic"]) != 1:
+            _fail(f"duplicate/missing diagnostic for {cid}")
+        repeats = r.get("profile_repeats", 1) if stage == "profile" else 1
+        expected_builds = {(c, i) for c in conditions for i in range(repeats)}
+        actual_builds = {(x["condition"], x.get("repetition", 0)) for x in by["build"]}
+        if actual_builds != expected_builds or len(by["build"]) != len(expected_builds):
+            _fail(f"missing/extra build condition or repetition for {cid}")
+        qids = set(qmap[cid])
+        if stage == "full":
+            if {x["question_id"] for x in by["parity"]} != qids or len(by["parity"]) != len(qids):
+                _fail(f"incomplete parity questions for {cid}")
+        elif stage != "probe":
+            expected = {(c, q) for c in conditions for q in qids}
+            actual = {(x["condition"], x["question_id"]) for x in by["answer"]}
+            if actual != expected or len(by["answer"]) != len(expected):
+                _fail(f"missing/extra condition × question answers for {cid}")
+            for qid in qids:
+                answers = [x for x in by["answer"] if x["question_id"] == qid]
+                reference = answers[0]
+                if any(x["gold"] != reference["gold"] or x["n_answer_tokens"] != reference["n_answer_tokens"]
+                       or (x["nll"] is None) != (reference["nll"] is None) for x in answers):
+                    _fail(f"incompatible answer targets/NLL availability for {cid}/{qid}")
+
+
 def load(pattern):
     runs, builds, answers, diags, parity, errors = [], [], [], [], [], []
-    seen = set()
+    seen, run_map, records = set(), {}, defaultdict(list)
     for p in sorted(glob.glob(os.path.join(ROOT, pattern))):
-        for ln, line in enumerate(open(p), 1):
+        with open(p, encoding="utf-8") as handle:
+            lines = list(handle)
+        for ln, line in enumerate(lines, 1):
             try:
-                r = json.loads(line)
-            except json.JSONDecodeError:
+                r = json.loads(line, parse_constant=lambda value: _fail(f"nonfinite JSON value {value}"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
                 raise LogError(f"malformed JSON at {p}:{ln}")
+            if not isinstance(r, dict):
+                _fail(f"record must be an object at {p}:{ln}")
             t = r.get("record_type")
             if t == "run":
+                _metadata(r)
+                if r["run_id"] in run_map:
+                    _fail(f"duplicate run metadata {r['run_id']}")
+                if runs and _signature(r) != _signature(runs[0]):
+                    differing = sorted(k for k in _signature(r).keys() | _signature(runs[0]).keys()
+                                       if _signature(r).get(k) != _signature(runs[0]).get(k))
+                    _fail(f"incompatible run metadata: {', '.join(differing)}")
+                run_map[r["run_id"]] = r
                 runs.append(r)
-            elif t == "build":
-                builds.append(r)
-            elif t == "answer":
-                key = (r["context_id"], r["question_id"], r["condition"])
-                if key in seen:
-                    raise LogError(f"duplicate answer record {key} at {p}:{ln}")
-                seen.add(key); answers.append(r)
-            elif t == "diagnostic":
-                diags.append(r)
-            elif t == "parity":
-                parity.append(r)
-            elif t == "error":
-                errors.append(r)
-            elif t == "context_done":
-                pass
-            else:
-                raise LogError(f"unknown record_type {t!r} at {p}:{ln}")
+                continue
+            if t not in {"build", "answer", "diagnostic", "parity", "error", "context_done"}:
+                _fail(f"unknown record_type {t!r} at {p}:{ln}")
+            if r.get("run_id") not in run_map:
+                _fail(f"orphan record with unknown run_id at {p}:{ln}")
+            if t == "error":
+                _fail(f"error record at {p}:{ln}: {r.get('error')}")
+            r["context_id"] = _id(r.get("context_id"), "context_id")
+            if t in {"answer", "parity"}:
+                r["question_id"] = _id(r.get("question_id"), "question_id")
+            if t in {"answer", "build"}:
+                parse_cond(r.get("condition"))
+            key = (t, r["context_id"], r.get("question_id"), r.get("condition"),
+                   r["run_id"] if t == "context_done" else None,
+                   r.get("repetition", 0) if t == "build" else None)
+            if key in seen:
+                _fail(f"duplicate {t} record at {p}:{ln}")
+            seen.add(key)
+            if t == "answer":
+                _validate_answer(r)
+            if t == "build" and run_map[r["run_id"]]["schema_version"] == "context_only_v2":
+                isolated = run_map[r["run_id"]]["stage"] == "profile"
+                if r.get("costs_valid_for_method") is not isolated:
+                    _fail("build costs_valid_for_method disagrees with stage")
+                if r.get("peak_scope") != ("context_build" if isolated else "shared_evaluation_harness"):
+                    _fail("build peak_scope disagrees with stage")
+                if isolated:
+                    _integer(r.get("repetition"), "profile repetition")
+            records[r["run_id"]].append(r)
+            destination = {"build": builds, "answer": answers, "diagnostic": diags, "parity": parity}
+            if t in destination:
+                destination[t].append(r)
     if not runs:
         raise LogError("no run metadata")
-    keys = ("schema_version", "model", "manifest_sha256", "stage", "protect", "nll_rule", "max_new_tokens")
-    base = {k: runs[0].get(k) for k in keys}
-    for r in runs[1:]:
-        if {k: r.get(k) for k in keys} != base:
-            raise LogError(f"incompatible run metadata: {base} vs { {k: r.get(k) for k in keys} }")
+    for run in runs:
+        _complete(run, records[run["run_id"]])
     return runs, builds, answers, diags, parity, errors
 
 
@@ -66,6 +344,7 @@ def macro(per_ctx):
 
 
 def boot(per_ctx, n_boot=5000, seed=42):
+    _integer(n_boot, "n_boot", 1)
     ctx = [k for k, v in per_ctx.items() if v]
     if not ctx:
         return None
@@ -92,22 +371,25 @@ def analyze(answers, n_boot):
     full = {}
     per = defaultdict(dict)                     # (ctx, q) -> cond -> rec
     for r in answers:
-        if r.get("status") != "ok":
-            continue
+        _validate_answer(r)
         k = (r["context_id"], r["question_id"])
+        if r["condition"] in per[k]:
+            _fail("duplicate answer in quality analysis")
         if r["condition"] == FULL:
             full[k] = r
         per[k][r["condition"]] = r
     keys = [k for k in per if k in full]
     missing_full = [k for k in per if k not in full]
+    if missing_full:
+        _fail("quality analysis requires FULL for every question")
     conds = sorted({c for k in keys for c in per[k] if c != FULL})
+    if any(set(per[k]) != set(conds) | {FULL} for k in keys):
+        _fail("quality analysis requires a common complete condition × question set")
     out = {}
     for c in conds:
         em, ret, dnll, loy, gen = (defaultdict(list) for _ in range(5))
         for k in keys:
             r = per[k].get(c)
-            if r is None:
-                continue
             em[k[0]].append(r["em"])
             if full[k]["em"] == 1:
                 ret[k[0]].append(r["em"])
@@ -143,8 +425,18 @@ def paired(res, c, ref, metric, n_boot):
 
 
 def parse_cond(c):
-    m, d, s, k, seed = c.split("|")
-    return m, d, s, float(k[1:]), int(seed[1:])
+    try:
+        m, d, s, k, seed = c.split("|")
+        if not m or d not in {"none", "keep_high", "keep_low"} or s not in {"none", "global", "boundary", "layer_matched"}:
+            raise ValueError
+        if not k.startswith("k") or not seed.startswith("s"):
+            raise ValueError
+        ratio, selection_seed = float(k[1:]), int(seed[1:])
+        if not math.isfinite(ratio) or not 0 < ratio <= 1 or selection_seed < 0:
+            raise ValueError
+        return m, d, s, ratio, selection_seed
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise LogError(f"malformed condition {c!r}") from exc
 
 
 def main():
@@ -152,11 +444,22 @@ def main():
     ap.add_argument("--pattern", required=True); ap.add_argument("--out", required=True)
     ap.add_argument("--n-boot", type=int, default=5000)
     a = ap.parse_args()
+    if a.n_boot < 1:
+        ap.error("n-boot must be positive")
+    out = os.path.join(ROOT, a.out) + ".md"
+    if os.path.exists(out):
+        ap.error(f"output already exists: {out}; choose a new --out")
     runs, builds, answers, diags, parity, errors = load(a.pattern)
     stage = runs[0]["stage"]
     L = [f"# Context-only KV — {stage} — {a.pattern}", "",
          f"model {runs[0]['model']} · code {runs[0]['code_revision'][:8]}{' (dirty)' if runs[0]['code_dirty'] else ''} · "
          f"split {runs[0]['split']} · protect: {runs[0]['protect']} · NLL: {runs[0]['nll_rule']}", ""]
+    legacy = runs[0]["schema_version"] == "context_only_v1"
+    if legacy:
+        L += ["Legacy v1: 효과 로그의 완료·질문·조건 정합성은 검증했지만 비용은 legacy/unverified입니다. "
+              "기존 timing/peak 값을 방법별 비용 근거로 재사용하지 않습니다.", ""]
+    if stage == "profile":
+        L += ["Profile은 비용 전용 실행입니다. 독립 FULL 정답 기준이 없으므로 품질 비교표를 생성하지 않습니다.", ""]
     if errors:
         L += [f"**오류 기록 {len(errors)}건** (context 제외됨): " + ", ".join(sorted({e['context_id'] for e in errors})[:10]), ""]
     if parity:
@@ -176,9 +479,12 @@ def main():
                      f"{d['R_visual']['mean']:.3f}/{d['R_nonvisual']['mean']:.3f} | {d['D_visual']['mean']:.3f}/{d['D_nonvisual']['mean']:.3f} | "
                      f"{(d['spearman_R_vs_D_token'] or float('nan')):.3f} | {top} |")
         L.append("")
-    if answers:
+    if answers and stage != "profile":
         res = analyze(answers, a.n_boot)
-        L += [f"## 품질 (context {res['n_contexts']}, 질문 {res['n_pairs']}, FULL EM {fmt(res['full_em'])}; FULL 참조 없는 질문 {res['missing_full']}개 제외)", ""]
+        L += [f"## 품질 (완료된 공통 context {res['n_contexts']}, 질문 {res['n_pairs']}, FULL EM {fmt(res['full_em'])})", ""]
+        excluded_nll = sum(res["full"][k].get("nll") is None for k in res["keys"])
+        if excluded_nll:
+            L += [f"모든 조건에서 동일하게 NLL이 정의되지 않은 질문 {excluded_nll}개는 NLL 집계에서 제외합니다.", ""]
         conds = res["conds"]
         rand_global = [c for c in conds if parse_cond(c)[0] == "random" and parse_cond(c)[2] == "global"]
         if stage == "deletion":
@@ -244,16 +550,28 @@ def main():
         by = defaultdict(list)
         for b in builds:
             by[b["condition"]].append(b)
-        L += ["## 저장량·비용 (build 기록 평균)", "", "| 조건 | 쌍 유지 비율 | KV bytes | metadata bytes | prefill s | score s | select s | prune s | peak GB |", "|---|---|---|---|---|---|---|---|---|"]
+        valid_costs = not legacy and stage == "profile"
+        if valid_costs:
+            L += ["## 격리된 profile 저장량·비용 (build 반복 평균)", "",
+                  "| 조건 | 쌍 유지 비율 | KV MiB | metadata KiB | build wall s | build peak over model GiB | resident over model MiB |",
+                  "|---|---|---|---|---|---|---|"]
+        else:
+            L += ["## 논리 저장량 (build 기록 평균)", "",
+                  "비용 열은 생략합니다: legacy/unverified 또는 FULL seed가 함께 존재하는 shared evaluation harness입니다.", "",
+                  "| 조건 | 쌍 유지 비율 | KV MiB | metadata KiB |", "|---|---|---|---|"]
         for c, bs in sorted(by.items()):
             n = len(bs)
             g = lambda k: sum(b.get(k) or 0 for b in bs) / n
-            L.append(f"| {c} | {g('keep_ratio_actual'):.3f} | {g('kv_bytes')/2**20:.1f} MB | {g('metadata_bytes')/2**10:.0f} KB | "
-                     f"{g('prefill_seconds'):.2f} | {g('score_seconds'):.3f} | {g('select_seconds'):.3f} | {g('prune_seconds'):.3f} | {g('peak_bytes')/2**30:.2f} |")
+            line = f"| {c} | {g('keep_ratio_actual'):.3f} | {g('kv_bytes')/2**20:.1f} | {g('metadata_bytes')/2**10:.0f} |"
+            if valid_costs:
+                line += f" {g('build_wall_seconds'):.3f} | {g('build_peak_bytes_over_model')/2**30:.3f} | {g('resident_bytes_over_model_after_build')/2**20:.2f} |"
+            L.append(line)
         L.append("")
     text = "\n".join(L)
-    out = os.path.join(ROOT, a.out); os.makedirs(os.path.dirname(out), exist_ok=True)
-    open(out + ".md", "w").write(text); print(text); print(f"[saved] {out}.md")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out, "x", encoding="utf-8") as handle:
+        handle.write(text)
+    print(text); print(f"[saved] {out}")
 
 
 if __name__ == "__main__":

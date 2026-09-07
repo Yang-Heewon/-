@@ -32,7 +32,31 @@ from vlm_diagnosis.exps.m2a_fixed_budget import MAX_PIXELS, BRIEF
 ROOT = os.path.join(os.path.dirname(__file__), "..", "..")
 SCHEMA = "context_only_v1"
 DEV_CONTEXTS = 40          # manifest 앞 40 화면 = 개발(dev), 나머지 = 평가(eval)
+RESUME_KEYS = ("schema_version", "stage", "model", "manifest_sha256", "split", "shard", "nshards", "keep_ratios", "methods",
+               "random_seeds", "eps", "protect", "protected_special_ids", "questions", "max_new_tokens", "dtype", "attn_backend")
 DELETION_SIGNALS = ("mlp_norm", "r", "d", "k_norm", "v_norm", "r_std", "hidden_rel", "hidden_cos", "d_shuffle", "d_anchor")
+
+
+def check_resume(out_path, run_meta):
+    """resume 전 검사: 기존 파일의 마지막 run metadata 가 현재 설정(RESUME_KEYS)과 같아야 한다.
+    통과하면 완료된 context_id 집합을 돌려주고 run_meta 에 resumed_from 을 적는다. 불일치·손상은 SystemExit."""
+    prev_runs, done = [], set()
+    for ln, line in enumerate(open(out_path), 1):
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            raise SystemExit(f"malformed line {ln} in {out_path}; refusing to resume")
+        if r.get("record_type") == "run":
+            prev_runs.append(r)
+        elif r.get("record_type") == "context_done":
+            done.add(str(r["context_id"]))
+    if not prev_runs:
+        raise SystemExit(f"{out_path} has no run metadata; refusing to resume")
+    differing = [k for k in RESUME_KEYS if prev_runs[-1].get(k) != run_meta.get(k)]
+    if differing:
+        raise SystemExit(f"resume settings differ from {out_path}: {differing}")
+    run_meta["resumed_from"] = prev_runs[-1]["run_id"]
+    return done
 
 
 def _git(args):
@@ -147,6 +171,9 @@ def main():
     ap.add_argument("--eps", type=float, default=1e-6)
     ap.add_argument("--protect-prefix", type=int, default=4)
     ap.add_argument("--profile-method", default="d")
+    ap.add_argument("--parity-argmax-min", type=float, default=0.9, help="full: suffix argmax 일치율 하한 (미달 시 실패)")
+    ap.add_argument("--parity-nll-tol", type=float, default=0.02, help="full: cached vs dense 정답 NLL 허용 차 (초과 시 실패)")
+    ap.add_argument("--overwrite", action="store_true", help="기존 출력 파일을 덮어쓴다 (기본: 거부)")
     ap.add_argument("--out", default=None)
     ap.add_argument("--resume", action="store_true")
     a = ap.parse_args()
@@ -171,14 +198,8 @@ def main():
     run_id = f"co-{a.stage}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
 
     done = set()
-    if a.resume and os.path.exists(out_path):
-        for line in open(out_path):
-            try:
-                r = json.loads(line)
-                if r.get("record_type") == "context_done":
-                    done.add(str(r["context_id"]))
-            except json.JSONDecodeError:
-                raise SystemExit(f"malformed line in {out_path}; refusing to resume")
+    if os.path.exists(out_path) and not a.resume and not a.overwrite:
+        raise SystemExit(f"{out_path} exists; pass --resume (same settings) or --overwrite")
 
     methods = [m for m in a.methods.split(",") if m]
     if a.with_attn1:
@@ -202,6 +223,8 @@ def main():
         "questions": f"manifest questions[1:1+{a.questions_per_context}] + BRIEF", "brief": BRIEF,
         "max_new_tokens": a.max_new_tokens, "decode": "greedy", "started_at": datetime.now(timezone.utc).isoformat(),
     }
+    if a.resume and os.path.exists(out_path):
+        done = check_resume(out_path, run_meta)
     f = open(out_path, "a" if a.resume else "w")
     f.write(json.dumps(run_meta) + "\n"); f.flush()
 
@@ -336,11 +359,18 @@ def run_full(model, processor, img, cid, qs, a, emit, special_ids):
         lp = torch.log_softmax(o.logits[0, S - 1: ids.shape[1] - 1].float(), -1).gather(1, ans[0].to(a.device)[:, None])[:, 0]
         nll_dense = float(-lp.mean())
         del o
-        emit({"record_type": "parity", "context_id": cid, "question_id": q["question_id"], "n_prefix": P,
-              "suffix_tokens": int(suffix.shape[1]), "positions_match": pos_ok, "logit_max_abs_diff": float(diff.max()),
-              "logit_mean_abs_diff": float(diff.mean()), "argmax_agreement": argmax_agree, "first_answer_token_agree": top_last,
-              "nll_cached": n_c["nll"], "nll_dense": nll_dense, "nll_abs_diff": abs(n_c["nll"] - nll_dense),
-              "n_answer_tokens": n_c["n_answer_tokens"]})
+        rec = {"record_type": "parity", "context_id": cid, "question_id": q["question_id"], "n_prefix": P,
+               "suffix_tokens": int(suffix.shape[1]), "positions_match": pos_ok, "logit_max_abs_diff": float(diff.max()),
+               "logit_mean_abs_diff": float(diff.mean()), "argmax_agreement": argmax_agree, "first_answer_token_agree": top_last,
+               "nll_cached": n_c["nll"], "nll_dense": nll_dense, "nll_abs_diff": abs(n_c["nll"] - nll_dense),
+               "n_answer_tokens": n_c["n_answer_tokens"], "argmax_min": a.parity_argmax_min, "nll_tol": a.parity_nll_tol}
+        failures = [name for name, ok in (("positions", pos_ok), ("first_answer_token", top_last),
+                                          ("argmax_agreement", argmax_agree >= a.parity_argmax_min),
+                                          ("nll", rec["nll_abs_diff"] <= a.parity_nll_tol)) if not ok]
+        rec["status"] = "ok" if not failures else "fail:" + ",".join(failures)
+        emit(rec)
+        if failures:
+            raise RuntimeError(f"parity failed for {cid}/{q['question_id']}: {failures}")
     del mem, pre
 
 
@@ -405,7 +435,8 @@ def run_profile(model, processor, img, cid, qs, a, emit, special_ids):
     peak = int(torch.cuda.max_memory_allocated(a.device)) if torch.cuda.is_available() else 0
     resident = int(torch.cuda.memory_allocated(a.device)) if torch.cuda.is_available() else 0
     emit({"record_type": "build", "context_id": cid, "condition": cond_id(m, "keep_high", "global", k, 0), **report_dict(rep),
-          "build_wall_seconds": build_wall, "build_peak_bytes_over_model": peak - base_alloc,
+          "build_wall_seconds": build_wall, "build_peak_bytes_over_model": peak - base_alloc, "base_alloc_bytes": base_alloc,
+          "peak_includes_prefill": True,
           "resident_bytes_over_model_after_build": resident - base_alloc, "persistent_bytes": mem.kv_bytes + mem.metadata_bytes})
     pred_full = {}
     _answer_records(model, mem, cond_id(m, "keep_high", "global", k, 0), m, "keep_high", "global", k, 0, cid, qs, a, emit, pred_full)

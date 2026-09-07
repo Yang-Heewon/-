@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import torch
 
@@ -47,6 +48,15 @@ class SelectTest(unittest.TestCase):
         s2 = torch.arange(20.).view(1, 1, 20)
         self.assertTrue(torch.equal(S.select_pairs(s2, prot, 5, 1), S.select_pairs(s2, prot, 5, 9)))
 
+    def test_tie_ranks_stay_integer_beyond_fp32_exact_range(self):
+        self.assertEqual(S._tie_permutation((1, 1, 5), 1).dtype, torch.int64)
+        # Isolate two ranks from a large pair population without allocating
+        # millions of score entries. FP32 would collapse these distinct ranks.
+        tie = torch.tensor([[[2**24 + 1, 2**24]]], dtype=torch.int64)
+        with patch.object(S, "_tie_permutation", return_value=tie):
+            keep = S.select_pairs(torch.zeros(1, 1, 2), torch.zeros(2, dtype=torch.bool), 1, 0)
+        self.assertEqual(keep.tolist(), [[[False, True]]])
+
     def test_nonfinite_rejected(self):
         score = torch.zeros(1, 1, 5); score[0, 0, 3] = float("nan")
         with self.assertRaises(ValueError):
@@ -61,13 +71,39 @@ class SelectTest(unittest.TestCase):
         z = S.map_token_signal(D, "d_same_zero0", L, H)
         self.assertTrue(bool((z[0] == 0).all()) and bool((z[1:] == 2).all()))
         sh = S.map_token_signal(D, "d_shift_prev", L, H)
-        self.assertTrue(bool((sh == 2).all()))
+        self.assertTrue(bool((sh[:2] == 0).all()) and bool((sh[2:] == 2).all()))
         with self.assertRaises(ValueError):
             S.map_token_signal(sig, "d_same_zero0", L, H)
         with self.assertRaises(ValueError):
             S.map_token_signal(sig, "nope", L, H)
         std = S.map_token_signal(torch.arange(4.), "r_std_same", L, H)
         self.assertEqual(tuple(std.shape), (L, H, T))
+
+    def test_shifted_D_is_one_layer_later_and_omits_final_observation(self):
+        D = torch.tensor([[1., 10.], [2., 20.], [99., 990.]])
+        shifted = S.map_token_signal(D, "d_shift_prev", 4, 2)
+        expected = torch.tensor([[0., 0.], [0., 0.], [1., 10.], [2., 20.]])
+        for head in range(2):
+            torch.testing.assert_close(shifted[:, head], expected)
+        same = S.map_token_signal(D, "d_same_zero0", 4, 2)
+        torch.testing.assert_close(shifted[1:], same[:-1])
+        # With only two layers the sole D observation has no later KV layer.
+        two_layers = S.map_token_signal(torch.tensor([[3., 4.]]), "d_shift_prev", 2, 1)
+        self.assertTrue(bool((two_layers == 0).all()))
+
+    def test_mapping_validates_dimensions_shapes_and_finite_signals(self):
+        for name in ("d_same_zero0", "d_shift_prev"):
+            with self.subTest(mapping=name), self.assertRaises(ValueError):
+                S.map_token_signal(torch.empty(0, 3), name, 1, 2)
+        for bad in (0, -1, True, 1.5):
+            with self.subTest(heads=bad), self.assertRaises(ValueError):
+                S.map_token_signal(torch.ones(2, 3), "r_same", 2, bad)
+            with self.subTest(layers=bad), self.assertRaises(ValueError):
+                S.map_token_signal(torch.ones(2, 3), "r_same", bad, 2)
+        for invalid in (torch.ones(2), torch.ones(2, 3, 1), torch.empty(2, 0),
+                        torch.tensor([[1., float("inf")], [1., 2.]])):
+            with self.subTest(shape=invalid.shape), self.assertRaises(ValueError):
+                S.map_token_signal(invalid, "r_same", 2, 2)
 
     def test_layer_matched_and_boundary(self):
         torch.manual_seed(1)
@@ -93,6 +129,13 @@ class SelectTest(unittest.TestCase):
         self.assertEqual(tuple(Da.shape), (4, 6)); self.assertEqual(len(js), 4)
         for l, j in enumerate(js, start=1):
             self.assertNotEqual(l, j); self.assertTrue(0 <= j < 5)
+
+    def test_shuffle_and_anchor_reject_invalid_R(self):
+        for method in (S.shuffled_D, S.anchor_D):
+            for invalid in (torch.ones(1, 3), torch.empty(0, 3), torch.empty(3, 0),
+                            torch.ones(3), torch.tensor([[1., 2.], [float("nan"), 3.]])):
+                with self.subTest(method=method.__name__, shape=invalid.shape), self.assertRaises(ValueError):
+                    method(invalid, 0)
 
     def test_average_rank_and_spearman(self):
         r = S.average_rank(torch.tensor([3., 1., 3., 2.]))
