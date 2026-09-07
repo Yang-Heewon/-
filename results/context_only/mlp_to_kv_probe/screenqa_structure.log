@@ -1,0 +1,3 @@
+model Qwen2_5_VLForConditionalGeneration; decoder layers 28; kv heads 4; head_dim 128; q heads 28
+pre-norm: input_layernorm(Qwen2RMSNorm) → self_attn(q/k/v_proj bias=True) → +residual → post_attention_layernorm → mlp → +residual
+RoPE: apply_multimodal_rotary_pos_emb after k_proj/q_proj view+transpose; scores use pre-RoPE K (rotation-invariant, verified), attention recompute uses post-RoPE
